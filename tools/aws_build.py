@@ -17,6 +17,7 @@ Stage 2 writes one Markdown page per service, which is the unit the RAG system
 retrieves and cites.
 """
 import json
+import os
 import pathlib
 import re
 import sys
@@ -206,6 +207,13 @@ def segment(text: str, services: list[dict]) -> list[dict]:
     return services
 
 
+def _plain(value: str) -> str:
+    """The catalogue returns some fields as HTML fragments."""
+    v = re.sub(r"<[^>]+>", " ", value or "")
+    v = v.replace(" ", " ")
+    return re.sub(r"\s+", " ", v).strip()
+
+
 def _norm(name: str) -> str:
     """Loose key for matching whitepaper names against catalogue names."""
     n = name.lower()
@@ -231,12 +239,11 @@ def fetch_catalog() -> list[dict]:
             "name": name,
             # Strip the campaign tracking parameters AWS appends.
             "url": (f.get("productUrl") or "").split("?")[0],
-            "summary": re.sub(r"\s+", " ",
-                              (f.get("productSummary") or "")).strip(),
-            "category": (f.get("productCategory") or "").strip(),
+            "summary": _plain(f.get("productSummary")),
+            "category": _plain(f.get("productCategory")),
             "pricing_url": (f.get("pricingUrl") or "").split("?")[0],
-            "launched": (f.get("launchDate") or "").strip(),
-            "free_tier": (f.get("freeTierAvailability") or "").strip(),
+            "launched": _plain(f.get("launchDate")),
+            "free_tier": _plain(f.get("freeTierAvailability")),
         })
     return out
 
@@ -310,15 +317,39 @@ def cmd_parse() -> None:
 
 
 def cmd_pages() -> None:
-    """One Markdown file per service -- the unit the RAG indexes and cites."""
+    """One Markdown file per service -- the unit the RAG indexes and cites.
+
+    RAG_AWS_PAGE_URL decides what a citation points at:
+
+        aws    (default) the service's page on aws.amazon.com, so a reader
+               can click through to something useful
+        local  the generated file on disk, for offline or air-gapped use
+
+    With `aws`, each page carries a `source_url:` front-matter line that the
+    Markdown loader reads in place of the file path.
+    """
+    mode = os.getenv("RAG_AWS_PAGE_URL", "aws").strip().lower()
+    if mode not in ("aws", "local"):
+        raise SystemExit(
+            f"RAG_AWS_PAGE_URL must be 'aws' or 'local', got {mode!r}")
+
     services = json.loads(SERVICES_JSON.read_text(encoding="utf-8"))
     PAGES_DIR.mkdir(parents=True, exist_ok=True)
     for f in PAGES_DIR.glob("*.md"):
         f.unlink()
 
+    linked = 0
     for s in services:
         slug = re.sub(r"[^a-z0-9]+", "-", s["name"].lower()).strip("-")
-        body = [f"# {s['name']}", ""]
+        body = []
+        if mode == "aws":
+            # Prefer the product page; fall back to the whitepaper for the
+            # services the live catalogue had no match for.
+            canonical = s.get("aws_url") or SOURCE_URL
+            linked += 1 if s.get("aws_url") else 0
+            body += ["---", f"title: {s['name']}",
+                     f"source_url: {canonical}", "---", ""]
+        body += [f"# {s['name']}", ""]
         if s.get("aws_summary"):
             body += [f"> {s['aws_summary']}", ""]
         body += [f"**Category:** {s['category']}  "]
@@ -340,6 +371,12 @@ def cmd_pages() -> None:
     total = sum(len(s["text"]) for s in services)
     print(f"wrote {len(services)} service pages to {PAGES_DIR} "
           f"({total:,} chars of description)")
+    if mode == "aws":
+        print(f"  citations point at aws.amazon.com for {linked} services, "
+              f"at the whitepaper for {len(services) - linked}")
+    else:
+        print("  citations point at the local file path "
+              "(RAG_AWS_PAGE_URL=aws to link to aws.amazon.com)")
 
 
 if __name__ == "__main__":

@@ -1,174 +1,172 @@
 {
-  "_note": "`must` entries are case-insensitive regexes; every one must appear in the answer. `doc` is the corpus document retrieval should surface. Questions with doc=null are corpus-level: they are routed to the overview context rather than similarity search.",
+  "_note": "Questions are matched against THIS corpus (244 AWS service pages built by tools/aws_build.py). `must` entries are case-insensitive regexes; all must appear in the answer. `doc` is the expected document id prefix, or null for corpus-level questions. If you change the corpus, rewrite these -- the scores mean nothing otherwise.",
   "answerable": [
     {
-      "q": "About how much of an axon does a single myelinating Schwann cell cover, and roughly how many are needed along a one-metre axon?",
-      "doc": "schwann-cell",
+      "q": "What discount do EC2 Spot Instances offer compared to On-Demand prices?",
+      "doc": "amazon-ec2",
       "must": [
-        "1 ?mm",
-        "1,?000"
+        "90%"
       ]
     },
     {
-      "q": "Who is the Schwann cell named after?",
-      "doc": "schwann-cell",
+      "q": "How much cheaper are Reserved Instances than On-Demand Instance pricing?",
+      "doc": "amazon-ec2",
       "must": [
-        "Theodor Schwann"
+        "72%"
       ]
     },
     {
-      "q": "How fast do axon sprouts grow through the Schwann cell tunnel during regeneration?",
-      "doc": "schwann-cell",
+      "q": "How much storage can an Amazon Aurora database instance auto-scale to?",
+      "doc": "amazon-aurora",
       "must": [
-        "1 ?mm",
-        "day"
+        "128 ?TB"
       ]
     },
     {
-      "q": "What is the overall range of nerve impulse transmission speed?",
-      "doc": "nerve-conduction-velocity",
+      "q": "What latency does Amazon DynamoDB deliver at any scale?",
+      "doc": "amazon-dynamodb",
       "must": [
-        "0.5",
-        "120"
+        "single.digit millisecond"
       ]
     },
     {
-      "q": "How does nerve conduction velocity in the upper extremities change with age?",
-      "doc": "nerve-conduction-velocity",
+      "q": "Above what step duration does Amazon SWF say you need to track processing state?",
+      "doc": "amazon-simple-workflow-service",
       "must": [
-        "1 ?m/s",
-        "10 years"
+        "500",
+        "millisecond"
       ]
     },
     {
-      "q": "How long are the nodes of Ranvier compared with the internodes between them?",
-      "doc": "node-of-ranvier",
+      "q": "How much storage does Amazon SageMaker AI Studio Lab provide, and at what cost?",
+      "doc": "amazon-sagemaker-ai-studio-lab",
       "must": [
-        "1.{0,4}2 ?(μm|micro)",
-        "1.5"
+        "15 ?GB",
+        "no cost|free"
       ]
     },
     {
-      "q": "Which animal holds the fastest recorded axonal conduction speed, and what speed?",
-      "doc": "myelin",
+      "q": "How much usable storage does the storage-optimized AWS Snowball Edge configuration have?",
+      "doc": "aws-snowball-edge",
       "must": [
-        "shrimp",
-        "90",
-        "200"
+        "80 ?TB"
       ]
     },
     {
-      "q": "To roughly what voltage does the axolemmal membrane depolarise at each node of Ranvier?",
-      "doc": "myelin",
+      "q": "How are you billed for AWS Lambda when your code is not running?",
+      "doc": "aws-lambda",
       "must": [
-        "35 ?mV"
+        "no charge|not.{0,15}charged"
       ]
     },
     {
-      "q": "How much faster is saltatory conduction than conduction in unmyelinated axons?",
-      "doc": "saltatory-conduction",
+      "q": "Which companies' foundation models are available through Amazon Bedrock?",
+      "doc": "amazon-bedrock",
       "must": [
-        "150",
-        "0.5",
-        "10"
+        "Anthropic",
+        "Meta",
+        "Mistral"
       ]
     },
     {
-      "q": "Which chromosome carries the human myelin basic protein gene?",
-      "doc": "myelin-basic-protein",
+      "q": "What kind of service is Amazon Route 53?",
+      "doc": "amazon-route-53",
       "must": [
-        "18"
+        "DNS|Domain Name System"
       ]
     },
     {
-      "q": "When was myelin basic protein first sequenced, and what was it isolated from?",
-      "doc": "myelin-basic-protein",
+      "q": "What durability does Amazon S3 offer?",
+      "doc": "amazon-simple-storage-service",
       "must": [
-        "1971",
-        "bovine"
+        "99.999999999"
       ]
     },
     {
-      "q": "Who first isolated nerve growth factor, in what year, and what prize did they later receive?",
-      "doc": "nerve-growth-factor",
+      "q": "What does AWS Ground Station let you do?",
+      "doc": "aws-ground-station",
       "must": [
-        "Levi-Montalcini",
-        "Cohen",
-        "1954",
-        "Nobel",
-        "1986"
+        "satellite"
       ]
     },
     {
-      "q": "Who is Guillain-Barre syndrome named after, and when was it first described?",
-      "doc": "guillain-barr-syndrome",
+      "q": "Which container service does AWS Fargate provide a compute engine for?",
+      "doc": "aws-fargate",
       "must": [
-        "Guillain",
-        "Barr",
-        "1916"
+        "ECS|Elastic Container Service"
       ]
     },
     {
-      "q": "What was the rate of Guillain-Barre syndrome after the 1976 swine flu vaccination campaign?",
-      "doc": "guillain-barr-syndrome",
+      "q": "What is Amazon Redshift and what language do you query it with?",
+      "doc": "amazon-redshift",
       "must": [
-        "8.8",
-        "million"
+        "data warehouse",
+        "SQL"
       ]
     },
     {
-      "q": "Who coined the term blood-brain barrier, and in what year?",
-      "doc": "blood-brain-barrier",
+      "q": "Where can AWS Outposts run AWS infrastructure?",
+      "doc": "aws-outposts",
       "must": [
-        "Lewandowsky",
-        "1900"
+        "data cent|on-premises|co-location"
       ]
     },
     {
-      "q": "Who devised the quail-chick marking system and when?",
-      "doc": "neural-crest",
+      "q": "How does Amazon EMR compare on cost and speed to traditional on-premises solutions?",
+      "doc": "amazon-emr",
       "must": [
-        "Le Douarin",
-        "1969"
+        "half",
+        "3x|three times"
       ]
     },
     {
-      "q": "Which cell type myelinates axons in the peripheral nervous system, and which does so in the central nervous system?",
+      "q": "In what year was AWS Lambda launched?",
+      "doc": "aws-lambda",
+      "must": [
+        "2015"
+      ]
+    },
+    {
+      "q": "When was Amazon DynamoDB launched?",
+      "doc": "amazon-dynamodb",
+      "must": [
+        "2012"
+      ]
+    },
+    {
+      "q": "Which product category does Amazon Braket belong to?",
+      "doc": "amazon-braket",
+      "must": [
+        "[Qq]uantum"
+      ]
+    },
+    {
+      "q": "Which category is Amazon Redshift listed under?",
+      "doc": "amazon-redshift",
+      "must": [
+        "Analytics"
+      ]
+    },
+    {
+      "q": "What is Amazon Managed Blockchain used for?",
+      "doc": "amazon-managed-blockchain",
+      "must": [
+        "blockchain",
+        "Hyperledger|Ethereum"
+      ]
+    },
+    {
+      "q": "summarise this collection",
       "doc": null,
       "must": [
-        "Schwann",
-        "oligodendrocyte"
-      ]
-    },
-    {
-      "q": "summarise",
-      "doc": null,
-      "must": [
-        "36",
-        "777|passages",
-        "myelin|nerv|neuro"
-      ]
-    },
-    {
-      "q": "what are the titles?",
-      "doc": null,
-      "must": [
-        "Schwann cell",
-        "Myelin",
-        "Action potential"
-      ]
-    },
-    {
-      "q": "how many documents are in this collection?",
-      "doc": null,
-      "must": [
-        "36"
+        "AWS|Amazon",
+        "24[0-9]|service"
       ]
     }
   ],
   "unanswerable": [
     {
-      "q": "What is the capital city of Mongolia?",
+      "q": "What is the capital city of Peru?",
       "kind": "out-of-domain"
     },
     {
@@ -176,31 +174,31 @@
       "kind": "out-of-domain"
     },
     {
-      "q": "Write me a Python function that reverses a linked list.",
+      "q": "Write a Python function that reverses a linked list.",
       "kind": "out-of-domain"
     },
     {
-      "q": "What is the current share price of Novartis?",
+      "q": "What is a good recipe for sourdough bread?",
       "kind": "out-of-domain"
     },
     {
-      "q": "In what year was Theodor Schwann born?",
+      "q": "What is the maximum execution timeout for an AWS Lambda function?",
       "kind": "adjacent-absent"
     },
     {
-      "q": "Which pharmaceutical company manufactures ocrelizumab?",
+      "q": "How many Availability Zones are in the eu-west-1 Region?",
       "kind": "adjacent-absent"
     },
     {
-      "q": "What is the recommended milligram dose of ocrelizumab for multiple sclerosis?",
+      "q": "How much does Amazon S3 Standard storage cost per GB in us-east-1?",
       "kind": "adjacent-absent"
     },
     {
-      "q": "How many Schwann cells are there in the entire human body?",
+      "q": "How does AWS Lambda compare to Google Cloud Functions?",
       "kind": "adjacent-absent"
     },
     {
-      "q": "What is the full amino acid sequence of human myelin basic protein?",
+      "q": "What is the default number of EC2 instances allowed per AWS account?",
       "kind": "adjacent-absent"
     }
   ]

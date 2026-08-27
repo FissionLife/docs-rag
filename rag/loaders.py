@@ -285,6 +285,32 @@ def _read_text(path: Path) -> str:
     raise LoadError(f"could not decode {path.name} as text")
 
 
+_FRONT_MATTER = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*\n", re.S)
+
+
+def split_front_matter(text: str) -> tuple[dict, str]:
+    """Pull a leading `key: value` block off a Markdown file.
+
+    Generated pages know where their content really came from, but the loader
+    would otherwise label them with the local file path -- so a citation reads
+    `file:///C:/.../amazon-s3.md` instead of the page a reader can open. A
+    `source_url:` in front matter lets the generator declare the canonical URL
+    and have citations point at it.
+
+    Deliberately not YAML: this reads flat `key: value` lines only, so it
+    needs no parser and cannot execute anything from a document.
+    """
+    m = _FRONT_MATTER.match(text)
+    if not m:
+        return {}, text
+    meta = {}
+    for line in m.group(1).splitlines():
+        if ":" in line and not line.lstrip().startswith("#"):
+            k, v = line.split(":", 1)
+            meta[k.strip().lower()] = v.strip().strip("\"'")
+    return meta, text[m.end():]
+
+
 def _md_title(text: str, default: str) -> str:
     m = re.search(r"^#\s+(.+)$", text, re.M)
     return m.group(1).strip() if m else default
@@ -302,9 +328,15 @@ def _from_file(path: Path) -> dict:
     if ext in HTML_EXT:
         return _from_html(raw, path.resolve().as_uri(), path.stem)
 
-    title = _md_title(raw, path.stem) if ext in MD_EXT else path.stem
+    meta = {}
+    if ext in MD_EXT:
+        meta, raw = split_front_matter(raw)
+
+    title = meta.get("title") or (
+        _md_title(raw, path.stem) if ext in MD_EXT else path.stem)
+    url = meta.get("source_url") or path.resolve().as_uri()
     return {"doc_id": _doc_id(title, str(path.resolve())), "title": title,
-            "url": path.resolve().as_uri(), "text": _clean(raw),
+            "url": url, "text": _clean(raw),
             "kind": "markdown" if ext in MD_EXT else "text"}
 
 

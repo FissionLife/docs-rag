@@ -17,7 +17,8 @@ the idea and then read the twenty lines that do it.
 9. [Evaluation](#9-evaluation)
 10. [Debugging a RAG system](#10-debugging-a-rag-system)
 11. [Cost, latency and scale](#11-cost-latency-and-scale)
-12. [Exercises](#12-exercises)
+12. [Case study: turning a 162-page PDF into a corpus](#12-case-study-turning-a-162-page-pdf-into-a-corpus)
+13. [Exercises](#13-exercises)
 
 ---
 
@@ -52,8 +53,8 @@ traces back to a passage you handed over.
 - **Long context** (dumping everything into the prompt) works, and is
   underrated for small corpora. It falls over on cost — you pay for every token
   on every call — on latency, and on the "lost in the middle" effect where
-  facts buried mid-prompt get overlooked. Our corpus is ~700k characters,
-  roughly 175k tokens. That fits in a modern context window, but you would pay
+  facts buried mid-prompt get overlooked. Our corpus is ~370k characters,
+  roughly 90k tokens. That fits in a modern context window, but you would pay
   for all of it on every question, and retrieval gives you citations for free.
 - **Tool / function calling** against a real API beats RAG whenever the answer
   lives in a database rather than in prose. Don't embed your orders table.
@@ -79,8 +80,7 @@ row, `Rag.ask()` is the bottom row. Read that file first; everything else is a
 detail of one of its steps.
 
 The asymmetry matters. Indexing is slow, batched, and paid once. Querying is
-latency-critical and paid p
-er question. Work you can push into indexing —
+latency-critical and paid per question. Work you can push into indexing —
 better chunking, richer metadata, precomputed summaries — is nearly free at
 query time. That trade is the single most useful lever in RAG design.
 
@@ -88,7 +88,53 @@ query time. That trade is the single most useful lever in RAG design.
 
 ## 3. Chunking
 
-> `rag/chunk.py`
+> `rag/loaders.py`, `rag/chunk.py`
+
+### Before you can chunk: parsing
+
+Chunking gets the attention, but the step before it decides how much there is
+to chunk. A document arrives as a PDF, a web page, a Markdown file or a URL,
+and how you turn that into text sets the ceiling on everything downstream.
+
+The rule that matters: **fetch the source, not the rendering.** A rendered page
+is an application — navigation, related-post rails, cookie banners, a layout
+engine. The source is what the author wrote. Two measured examples from this
+repository:
+
+| Source              | Scraping the rendering       | Fetching the source                          |
+| ------------------- | ---------------------------- | -------------------------------------------- |
+| A GitHub README     | 12,469 chars, **0 sections** | 17,009 chars, **17 sections**                |
+| A Wikipedia article | page chrome + article        | MediaWiki API plaintext with `== ==` markers |
+
+The section counts matter more than the character counts. GitHub renders `##`
+as `<h2>` inside its own layout, and boilerplate removal cannot tell the file's
+headings from the page's chrome — so it strips them all, and the document
+arrives as one undifferentiated blob with no breadcrumbs to give its chunks.
+
+So `loaders.py` special-cases what is worth special-casing:
+
+| Input                          | Handled by                      |
+| ------------------------------ | ------------------------------- |
+| `en.wikipedia.org/wiki/X`      | MediaWiki API                   |
+| `github.com/O/R/blob/REF/path` | `raw.githubusercontent.com`     |
+| `github.com/O/R`               | its README on `main`/`master`   |
+| `.pdf`                         | pypdf, **one section per page** |
+| any other URL, `.html`         | trafilatura article extraction  |
+| `.md .txt .rst .csv`, folders  | read directly                   |
+
+**Synthesise structure when the format has none.** A PDF has no headings, so the
+PDF loader emits `## Page 12` markers. That is not cosmetic: it means a citation
+can say `report.pdf > Page 12` instead of just `report.pdf`, which is the
+difference between a checkable citation and a gesture at a document.
+
+**Let a generated document declare its own identity.** Pages built by a script
+know where their content really came from, but the loader would label them with
+the local file path — so a citation reads `file:///C:/.../amazon-s3.md` rather
+than something a reader can open. A `source_url:` line in Markdown front matter
+overrides it. (Deliberately not YAML: flat `key: value` only, so nothing in a
+document can execute.)
+
+### Now, chunking
 
 You cannot embed a 60,000-character article as one vector. A single vector has
 a fixed budget of meaning; averaging an entire article into it produces
@@ -118,9 +164,19 @@ Chunking is where most RAG systems are quietly lost. The two failure modes:
 
 Three decisions, in `chunk.py`:
 
-1. **Never cross a section boundary.** `_sections()` parses the `== Heading ==`
-   markers that Wikipedia's plaintext export preserves, so a chunk about
-   "Clinical significance" never bleeds into "Evolution".
+1. **Never cross a section boundary.** `_sections()` reads both heading
+   dialects that reach it — Markdown `##` and MediaWiki `== ==` — so no loader
+   has to rewrite its text just to be chunkable. A chunk about "Clinical
+   significance" never bleeds into "Evolution".
+
+   Nesting is tracked with a **stack**, not by indexing the path by heading
+   level, and that distinction is not academic. Levels are not dense: a
+   document may jump from `#` to `###`, or use `##` for every section with no
+   `#` at all — which is exactly what the PDF loader's page markers do.
+   Index-based nesting silently makes `## Page 2` a _child_ of `## Page 1`,
+   and then of `Page 1 > Page 2 > Page 3`, so every citation after the first
+   page is wrong. Headings inside fenced code blocks are ignored too: `#` in a
+   Python sample is a comment, not a section.
 
 2. **Pack whole sentences, with overlap.** `_pack()` fills a chunk to
    `CHUNK_CHARS` (1400) using complete sentences, then _backs up_ to carry the
@@ -240,6 +296,41 @@ The second trap is rate limits. Embedding a corpus means thousands of requests;
 429s are normal, not exceptional. `backoff.py` retries with exponential delay
 and — importantly — retries _only_ transient errors, so a genuine bug fails
 fast instead of taking five doublings to surface.
+
+### The cache that makes re-indexing nearly free
+
+Indexing is the expensive half (§2), and the naive implementation re-embeds
+the entire corpus on every run. That is not merely slow — under a quota it is
+fatal. The free tier allows **1,000 embedding calls per day**, so a pipeline
+that re-embeds everything can be run once or twice a day and then stops
+working entirely.
+
+The fix is one design decision: make the cache **content-addressed rather than
+positional**. Each text is keyed on a hash of `(model, dimension, its own
+content)`:
+
+```python
+def _key(text): return sha1(f"{EMBED_MODEL}|{EMBED_DIM}|{text}")
+```
+
+The model and dimension belong in the key because vectors from different
+models are not comparable and must never collide. Content belongs in the key
+because that is what makes the cache survive everything else changing:
+
+| Action                      | Embedding calls                          |
+| --------------------------- | ---------------------------------------- |
+| Re-run with nothing changed | **0** (~1 second)                        |
+| Add one document to fifty   | only that document's chunks              |
+| Edit one paragraph          | only the chunks that actually changed    |
+| Change the chunk size       | all of them — every chunk's text changed |
+| Switch embedding model      | all of them — correctly, the key changed |
+
+That last pair is the point: the cache invalidates itself on exactly the
+changes that _should_ invalidate it, without any explicit versioning. A
+positional checkpoint (row 137 of 559) cannot do this — it only helps within a
+single run, and is worthless the moment the corpus changes.
+
+Deduplication comes free: identical text embeds once however often it appears.
 
 ### Other embedding options
 
@@ -622,6 +713,33 @@ Also tracked: **false refusals**. Grounding strictness always trades against
 helpfulness — a system that refuses everything scores perfectly on leakage. You
 must watch both numbers, or you will tune yourself into uselessness.
 
+### An eval set is coupled to its corpus
+
+This is the failure mode nobody warns you about. A question set is written
+against one specific collection of documents. Swap the corpus and the
+questions do not become _wrong_ — they become **meaningless**, and the
+distinction matters because the output looks identical either way.
+
+This repository's first eval set asked about myelin and Guillain-Barré
+syndrome. Point the same harness at a corpus of AWS service pages and
+retrieval recall collapses to near zero, answer accuracy follows, and the
+report reads exactly like a broken retrieval pipeline. Every number is
+"correct"; every number is about nothing.
+
+Two consequences worth internalising:
+
+- **A score is only meaningful next to the corpus it was measured on.** "100%
+  accuracy" with no corpus, model and date attached is not a claim, it is a
+  decoration. Record the configuration with the number.
+- **Say so in the tool.** `rag/evaluate.py` prints an explicit warning when
+  recall or accuracy falls below 70%, telling the reader to check that the
+  question set still describes the indexed documents _before_ debugging the
+  pipeline. A harness that reports a low score without that hint sends people
+  hunting for a bug in code that is working.
+
+The corollary: when you change corpus, rewrite the questions. It is an hour of
+work, and skipping it costs you the ability to tell whether anything works.
+
 ### Going further
 
 Frameworks worth knowing: **RAGAS** (faithfulness, context precision/recall),
@@ -637,11 +755,24 @@ beat 5,000 synthetic ones.
 Always answer this question first: **is it retrieval, or generation?**
 
 ```bash
-uv run inspect "your question"
+uv run inspect "your question"          # retrieval only, no generation
+uv run ask "your question" --chunks     # the answer AND what it was given
 ```
 
-That prints the retrieved chunks with their cosine, BM25 and RRF scores, and no
-generation step. Then:
+`inspect` prints the retrieved chunks with their cosine, BM25 and RRF scores
+and never calls the generator. `--chunks` prints the same passages _alongside_
+the answer, marking each **CITED** or **unused**.
+
+The **unused** ones are the informative half. They show what retrieval found
+and the generator then ignored, which is the only way to distinguish two
+failures that look identical from the answer alone:
+
+- a refusal with six on-topic passages → the model had the evidence and did
+  not use it (a generation or prompt problem);
+- a refusal with six irrelevant passages → retrieval never found it.
+
+That distinction is the whole first question of debugging, and it is invisible
+without seeing the context. Then:
 
 **The right chunk isn't in the list** → a retrieval problem. Check, in order:
 
@@ -744,7 +875,102 @@ of vectors at 1536 dimensions.
 
 ---
 
-## 12. Exercises
+## 12. Case study: turning a 162-page PDF into a corpus
+
+> `tools/aws_build.py`
+
+Most RAG tutorials start from documents that are already clean. Real ones start
+from a PDF someone emailed you. This is the whole path for one, and every
+problem in it is typical rather than exotic.
+
+**The task.** Take *Overview of Amazon Web Services* — 162 pages describing
+every AWS service — and build a corpus with one summary page per service.
+
+### The conversion loses everything you needed
+
+`markitdown` converts the PDF to Markdown and produces **zero headings**. Not
+"some headings" — none. The output is a flat stream of text with page headers
+and footers mixed into the prose, and the chunker described in §3 has nothing
+to split on. Every service would land in one enormous undifferentiated blob.
+
+This is the normal outcome. PDF is a layout format; it stores where glyphs go,
+not what they mean. A heading is "18pt bold with space above" and any converter
+has to guess. Expect to reconstruct structure rather than extract it.
+
+### Use the document's own schema
+
+The whitepaper has a table of contents — 272 entries listing every category and
+every service **in reading order**. That is precisely the segmentation the body
+text lacks. So: parse the TOC to get the schema, then walk the body and start a
+new section whenever a line matches a known name.
+
+The general lesson: when a document loses its structure in conversion, look for
+somewhere the structure is *stated* rather than *formatted*. A table of
+contents, an index, a manifest, a sitemap.
+
+### Then find out where the schema lies
+
+Two failures that a quick eyeball would not catch:
+
+**Sub-headings that masquerade as categories.** The TOC reads `Compute`, then
+`Compare AWS compute services`, then `Amazon EC2`. Taking the most recent
+heading as the category files EC2 — and all 14 compute services — under
+"Compare AWS compute services", and the `Compute` category silently ends up
+empty. The fix is a small ignore-list, but the lesson is to *check category
+counts*, because nothing errors.
+
+**The TOC is incomplete.** `Blockchain`, `Game tech` and `Serverless` have
+services in the body and no TOC entries at all. A TOC-only extractor drops them
+without a word — the worst kind of failure, because the output looks complete.
+
+The recovery exploits a habit of the prose: the whitepaper opens nearly every
+section by restating the service name.
+
+```
+Amazon MQ
+Amazon MQ is a managed message broker service for Apache ActiveMQ...
+```
+
+A standalone line whose text the *next* line begins with is almost certainly a
+section heading. That single heuristic recovered 25 missing services. Document
+conventions are structure too, when the formatting is gone.
+
+### Enrich from the source of truth, and prefer its API
+
+The brief also asked for more than the PDF held. The obvious approach — scrape
+350 product pages — is slow, fragile and rude. But AWS renders its own product
+directory from a JSON endpoint, so **one request** returns all 358 products with
+canonical URL, category, pricing page, launch date and free-tier status.
+
+Always look for the API behind the page before writing a scraper. It is faster,
+more stable, kinder to the host, and gives you fields the HTML never showed.
+
+Matching the two sources is fuzzy — the whitepaper says "Amazon EC2" where the
+catalogue says "Amazon Elastic Compute Cloud" — so normalise, then fall back to
+containment. That reached 224 of 244; the rest keep their whitepaper text and
+simply lack the extra metadata. **Partial enrichment is fine.** Do not let an
+unmatched 8% block the other 92%.
+
+### Result
+
+244 services, 23 categories, 559 chunks, and citations that link to
+aws.amazon.com. The eval in `eval/questions.json` was rewritten against this
+corpus — per §9, keeping the old questions would have made every number
+meaningless.
+
+### The transferable checklist
+
+1. Convert, then **look at what survived**. Count the headings.
+2. If structure is gone, find where the document *states* it.
+3. Verify the schema against the body; assume it is incomplete.
+4. Check counts per group. Silent misfiling does not raise.
+5. Look for the host's API before scraping its HTML.
+6. Accept partial enrichment.
+7. Rewrite the eval set for the new corpus.
+
+---
+
+## 13. Exercises
 
 Roughly in order of value gained per hour spent.
 

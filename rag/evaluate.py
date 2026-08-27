@@ -94,7 +94,11 @@ def main() -> None:
             print(f"\n{e}")
             print("\nPartial results are cached; rerun to continue.")
             raise SystemExit(1)
-        hit = item["doc"] is None or item["doc"] in r["docs"]
+        # Document ids carry a short hash of their source, so the question
+        # file names the readable prefix and we match on that.
+        want = item["doc"]
+        hit = want is None or any(
+            d == want or d.startswith(want + "-") for d in r["docs"])
         recall += hit
 
         missing = [p for p in item["must"]
@@ -164,6 +168,23 @@ def main() -> None:
         print("\n  GROUNDING LEAKS (answered from outside the corpus):")
         for q, a in leaks:
             print(f"    - {q}\n        {a[:160]}")
+
+    # A question set is written against one specific corpus. Swap the corpus
+    # and the questions quietly stop describing it: retrieval recall collapses
+    # and the numbers become meaningless rather than merely bad. Say so, rather
+    # than letting a low score read as a broken pipeline.
+    if recall / na < 0.7 or correct / na < 0.7:
+        print("\n" + "!" * 74)
+        print("  Scores are low. Before debugging the pipeline, check that")
+        print("  eval/questions.json still describes the documents you have")
+        print("  indexed. A question set written for a different corpus scores")
+        print("  near zero on retrieval however well the system works.")
+        print()
+        print("     uv run list             what is actually indexed")
+        print('     uv run inspect "..."    what retrieval returns')
+        print()
+        print("  If the corpus has changed, rewrite the questions to match it.")
+        print("!" * 74)
 
 
 if __name__ == "__main__":
