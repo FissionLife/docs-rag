@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+
+# Generated. `tools/aws_build.py` rebuilds services.json and catalog.json from
+# the whitepaper; `pages` + `uv run add` + `uv run ingest` rebuild the rest.
+data/aws/aws-overview.md
+data/aws/services/
+data/corpus/
+data/index/
+eval/.cache.json

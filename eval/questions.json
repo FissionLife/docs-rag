@@ -1,0 +1,207 @@
+{
+  "_note": "`must` entries are case-insensitive regexes; every one must appear in the answer. `doc` is the corpus document retrieval should surface. Questions with doc=null are corpus-level: they are routed to the overview context rather than similarity search.",
+  "answerable": [
+    {
+      "q": "About how much of an axon does a single myelinating Schwann cell cover, and roughly how many are needed along a one-metre axon?",
+      "doc": "schwann-cell",
+      "must": [
+        "1 ?mm",
+        "1,?000"
+      ]
+    },
+    {
+      "q": "Who is the Schwann cell named after?",
+      "doc": "schwann-cell",
+      "must": [
+        "Theodor Schwann"
+      ]
+    },
+    {
+      "q": "How fast do axon sprouts grow through the Schwann cell tunnel during regeneration?",
+      "doc": "schwann-cell",
+      "must": [
+        "1 ?mm",
+        "day"
+      ]
+    },
+    {
+      "q": "What is the overall range of nerve impulse transmission speed?",
+      "doc": "nerve-conduction-velocity",
+      "must": [
+        "0.5",
+        "120"
+      ]
+    },
+    {
+      "q": "How does nerve conduction velocity in the upper extremities change with age?",
+      "doc": "nerve-conduction-velocity",
+      "must": [
+        "1 ?m/s",
+        "10 years"
+      ]
+    },
+    {
+      "q": "How long are the nodes of Ranvier compared with the internodes between them?",
+      "doc": "node-of-ranvier",
+      "must": [
+        "1.{0,4}2 ?(μm|micro)",
+        "1.5"
+      ]
+    },
+    {
+      "q": "Which animal holds the fastest recorded axonal conduction speed, and what speed?",
+      "doc": "myelin",
+      "must": [
+        "shrimp",
+        "90",
+        "200"
+      ]
+    },
+    {
+      "q": "To roughly what voltage does the axolemmal membrane depolarise at each node of Ranvier?",
+      "doc": "myelin",
+      "must": [
+        "35 ?mV"
+      ]
+    },
+    {
+      "q": "How much faster is saltatory conduction than conduction in unmyelinated axons?",
+      "doc": "saltatory-conduction",
+      "must": [
+        "150",
+        "0.5",
+        "10"
+      ]
+    },
+    {
+      "q": "Which chromosome carries the human myelin basic protein gene?",
+      "doc": "myelin-basic-protein",
+      "must": [
+        "18"
+      ]
+    },
+    {
+      "q": "When was myelin basic protein first sequenced, and what was it isolated from?",
+      "doc": "myelin-basic-protein",
+      "must": [
+        "1971",
+        "bovine"
+      ]
+    },
+    {
+      "q": "Who first isolated nerve growth factor, in what year, and what prize did they later receive?",
+      "doc": "nerve-growth-factor",
+      "must": [
+        "Levi-Montalcini",
+        "Cohen",
+        "1954",
+        "Nobel",
+        "1986"
+      ]
+    },
+    {
+      "q": "Who is Guillain-Barre syndrome named after, and when was it first described?",
+      "doc": "guillain-barr-syndrome",
+      "must": [
+        "Guillain",
+        "Barr",
+        "1916"
+      ]
+    },
+    {
+      "q": "What was the rate of Guillain-Barre syndrome after the 1976 swine flu vaccination campaign?",
+      "doc": "guillain-barr-syndrome",
+      "must": [
+        "8.8",
+        "million"
+      ]
+    },
+    {
+      "q": "Who coined the term blood-brain barrier, and in what year?",
+      "doc": "blood-brain-barrier",
+      "must": [
+        "Lewandowsky",
+        "1900"
+      ]
+    },
+    {
+      "q": "Who devised the quail-chick marking system and when?",
+      "doc": "neural-crest",
+      "must": [
+        "Le Douarin",
+        "1969"
+      ]
+    },
+    {
+      "q": "Which cell type myelinates axons in the peripheral nervous system, and which does so in the central nervous system?",
+      "doc": null,
+      "must": [
+        "Schwann",
+        "oligodendrocyte"
+      ]
+    },
+    {
+      "q": "summarise",
+      "doc": null,
+      "must": [
+        "36",
+        "777|passages",
+        "myelin|nerv|neuro"
+      ]
+    },
+    {
+      "q": "what are the titles?",
+      "doc": null,
+      "must": [
+        "Schwann cell",
+        "Myelin",
+        "Action potential"
+      ]
+    },
+    {
+      "q": "how many documents are in this collection?",
+      "doc": null,
+      "must": [
+        "36"
+      ]
+    }
+  ],
+  "unanswerable": [
+    {
+      "q": "What is the capital city of Mongolia?",
+      "kind": "out-of-domain"
+    },
+    {
+      "q": "Who won the 2022 FIFA World Cup final?",
+      "kind": "out-of-domain"
+    },
+    {
+      "q": "Write me a Python function that reverses a linked list.",
+      "kind": "out-of-domain"
+    },
+    {
+      "q": "What is the current share price of Novartis?",
+      "kind": "out-of-domain"
+    },
+    {
+      "q": "In what year was Theodor Schwann born?",
+      "kind": "adjacent-absent"
+    },
+    {
+      "q": "Which pharmaceutical company manufactures ocrelizumab?",
+      "kind": "adjacent-absent"
+    },
+    {
+      "q": "What is the recommended milligram dose of ocrelizumab for multiple sclerosis?",
+      "kind": "adjacent-absent"
+    },
+    {
+      "q": "How many Schwann cells are there in the entire human body?",
+      "kind": "adjacent-absent"
+    },
+    {
+      "q": "What is the full amino acid sequence of human myelin basic protein?",
+      "kind": "adjacent-absent"
+    }
+  ]
+}
