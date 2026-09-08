@@ -11,6 +11,8 @@ Services* whitepaper and enriched from the AWS product catalogue.
 
 Learning the concepts: **[docs/RAG_GUIDE.md](docs/RAG_GUIDE.md)** — 13 sections
 from chunking to evaluation, including a case study of building this corpus.
+For diagrams of every stage in plain language, plus a demo command cheat
+sheet, see **[docs/PIPELINE_DIAGRAMS.md](docs/PIPELINE_DIAGRAMS.md)**.
 
 Five dependencies. No LangChain, no vector database, no framework. Managed with
 [uv](https://docs.astral.sh/uv/). One optional sixth (`chromadb`) exists
