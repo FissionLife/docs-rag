@@ -130,6 +130,52 @@ def _generate(prompt: str, system: str = SYSTEM) -> str:
         return with_retry(lambda: once(None))
 
 
+# --- faithfulness judging ---------------------------------------------
+#
+# Layer 4 (citation verification, above) checks that every [n] points at a
+# block that was actually supplied. It does NOT check that block [n] actually
+# supports the sentence citing it -- a model could cite the right block for
+# the wrong reason. This is the same gap RAGAS's `faithfulness` metric
+# targets. Rather than adopt the ragas package (it fails to import out of the
+# box on a clean install -- ragas/llms/base.py unconditionally imports
+# ChatVertexAI from a langchain_community module that no longer exists there
+# -- and even fixed, pulls the full LangChain+OpenAI stack for a metric that
+# needs one extra LLM call), this is that one call, using the client already
+# in this file. Same metric, zero new dependencies, opt-in because it doubles
+# the generation cost of an eval run.
+_JUDGE_SYSTEM = """You judge whether an ANSWER's claims are actually \
+supported by the CONTEXT blocks it cites. You are not asked whether the \
+answer is well-written or complete -- only whether each citation is honest.
+
+Reply with exactly two lines:
+SCORE: <integer 0-100, where 100 means every cited claim is fully supported \
+by the block it cites, and 0 means none are>
+REASON: <one sentence naming the specific claim that failed, or "all claims \
+supported" if the score is 100>"""
+
+
+def judge_faithfulness(question: str, answer_text: str,
+                       hits: list[dict]) -> dict:
+    """Score whether `answer_text`'s citations are honestly supported.
+
+    Returns {"score": int 0-100, "reason": str}. Costs one generation call --
+    call this only when you have already decided the cost is worth paying
+    (evaluate.py gates it behind --faithfulness).
+    """
+    context = build_context(hits)
+    prompt = (f"CONTEXT:\n{context}\n\nQUESTION: {question}\n\n"
+             f"ANSWER TO JUDGE:\n{answer_text}")
+    raw = _generate(prompt, system=_JUDGE_SYSTEM)
+
+    m = re.search(r"SCORE:\s*(\d{1,3})", raw)
+    score = max(0, min(100, int(m.group(1)))) if m else None
+    reason = re.search(r"REASON:\s*(.+)", raw)
+    return {
+        "score": score,
+        "reason": reason.group(1).strip() if reason else raw[:200],
+    }
+
+
 def answer(question: str, hits: list[dict],
            system: str = SYSTEM) -> dict:
     """Answer from hits, then verify the answer is actually cited."""

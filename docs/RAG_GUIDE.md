@@ -385,6 +385,17 @@ for speed, tuned by parameters like HNSW's `ef_search`. A retrieval regression
 after "just swapping in a vector DB" is usually an under-tuned index, not a
 model problem.
 
+**This claim is checkable, not just argued.** `uv run compare-store "..."`
+(needs `uv sync --extra chroma`) loads this corpus's exact same vectors — no
+re-embedding — into a real Chroma collection and queries both stores side by
+side. Measured on this corpus (559 vectors): identical top-6 results from
+both, native search in **0.5 ms**, Chroma's HNSW in **~3.2 ms** — about 6-7x
+slower to reach the same answer. Chroma is not doing anything wrong; HNSW's
+overhead just has nothing to buy back at a scale this small, which is exactly
+the argument this section makes, made visible rather than taken on faith.
+`rag/chroma_store.py` is deliberately kept out of the core pipeline — an
+optional dependency for a comparison, not a component anything else imports.
+
 ---
 
 ## 6. Retrieval
@@ -635,6 +646,61 @@ two-level tree whose leaves are chunks and whose single summary node is built
 from metadata and human-written lead sections, at zero LLM cost. RAPTOR is what
 you build when your documents have no such summaries to borrow.
 
+**A second, general implementation lives in `rag/hierarchy.py`**, opt-in via
+`RAG_CHUNK_MODE=hierarchical`. Where `overview.py` builds exactly one
+corpus-wide summary for a special query-routing path, this builds *many*
+summary nodes — one per cluster of related leaf chunks — and inserts them
+into the ordinary retrievable index alongside the leaves. Two design choices
+worth understanding on their own:
+
+- **Clustering is unsupervised** (hand-rolled k-means over the leaf
+  embeddings, `CLUSTER_TARGET_SIZE` chunks per cluster), not based on any
+  corpus-specific metadata like a hand-authored category field. That is a
+  deliberate trade: an unsupervised cluster is harder to justify in a live
+  demo than "this is the Compute category" would be, but it means the same
+  code produces a real hierarchy over *any* corpus this pipeline can ingest,
+  not just one with existing categories to lean on.
+- **Cluster summaries are extractive, not abstractive** — a template lists
+  each cluster's distinct documents and the opening sentence of its longest
+  member chunk, rather than asking an LLM to write a new paragraph about the
+  cluster. Same reasoning as `overview.py`: zero generation cost, deterministic
+  output, and it cannot fail mid-demo on a quota wall or a slow API call. Swap
+  `_summarise_cluster()` for a `generate()` call if you want synthesis instead
+  of extraction and can afford roughly one API call per cluster.
+
+Retrieval needs no new code path for any of this. Summary chunks are shaped
+exactly like leaf chunks (same `chunk_id`, `title`, `text`, `embed_text`
+fields) and self-identify only by a `_cluster_NNN` doc_id prefix
+(`hierarchy.is_summary()`), so the existing hybrid search in `retrieve.py`
+already treats them as ordinary retrievable documents, competing in the same
+ranking as everything else. This is RAPTOR's "collapsed tree" retrieval
+strategy — every node at every level is a candidate — rather than a
+level-by-level tree walk.
+
+**Measured on the AWS corpus**, asking *"what database options does AWS
+offer"*: a cluster summary covering five related database services
+(`Amazon Aurora`, `Amazon Lightsail managed databases`, `Amazon RDS for Db2`,
+`Amazon RDS on VMware`, `Amazon Relational Database Service`) was retrieved
+and cited alongside three leaf chunks — and the final answer named Aurora and
+RDS for Db2 by name, neither of which made the flat top-6 as a standalone
+leaf chunk. That is the concrete value of hierarchy: a broad question gets
+broader coverage from one summary chunk than six leaf chunks could give it.
+
+**Instant switching, and why it's free.** Each chunk mode gets its own index
+directory (`store.index_dir(mode=...)`), so once both have been built,
+switching is just changing `RAG_CHUNK_MODE` and reloading — no re-ingest.
+Building the hierarchical index *after* the flat one is close to free too:
+the embedding cache is content-addressed and shared across modes (see §4 and
+`store.py`), so the leaf chunks — identical text in both indexes — are never
+re-embedded. Only the newly-synthesized cluster summaries cost new calls: 28
+of them on this corpus, against 559 leaves already paid for.
+
+```bash
+uv run ingest                             # flat (default)
+RAG_CHUNK_MODE=hierarchical uv run ingest # hierarchical -- reuses leaf cache
+RAG_CHUNK_MODE=hierarchical uv run dev    # instant switch, no re-ingest
+```
+
 ### 8.8 Graph RAG
 
 Extract entities and relations into a knowledge graph, then retrieve by
@@ -720,9 +786,38 @@ Measure the stages separately, because they fail independently.
 ### Generation metrics
 
 - **Faithfulness / groundedness** — is every claim supported by the context?
-  The metric that matters most for our purpose.
+  The metric that matters most for our purpose, and the one this pipeline's
+  own citation check (§7) does not fully cover: it verifies a citation points
+  at a real block, not that the block actually supports the claim attached to
+  it. `rag/evaluate.py --faithfulness` closes that gap with one extra judge
+  call per answer — see "What this harness does" below.
 - **Answer relevance** — does it address the question actually asked?
 - **Correctness** — does it match a known-good answer?
+- **Context precision** — of the chunks retrieved, what fraction did the
+  generator actually use? Low precision means the top-k is full of
+  plausible-looking noise around the one chunk that mattered.
+
+**On adopting a framework for these**, RAGAS and DeepEval are the two most
+commonly reached-for. Both were evaluated by installing them, not by
+reputation:
+
+| | RAGAS 0.4.3 | DeepEval |
+|---|---|---|
+| Imports on a clean install | **No** — `ragas/llms/base.py` unconditionally imports `ChatVertexAI` from a `langchain_community` module that no longer exists there | Yes |
+| Default LLM | Vertex AI, via LangChain wrappers | **OpenAI** (bundles the `openai` package) |
+| Using Gemini instead | `langchain-google-genai`, plus the broken import above | A custom `DeepEvalBaseLLM` subclass you write |
+| Dependencies pulled in | 98–107 (full LangChain + OpenAI stacks) | 70, including `posthog` — phones home by default |
+| Needs full reference answers | Yes, for `context_recall` / `answer_correctness` | Yes, for the equivalent metrics |
+
+Neither was adopted. `faithfulness` and `context precision` are implemented
+directly — `judge_faithfulness()` in `generate.py`, using the Gemini client
+this project already has, no new dependency — because the two metrics this
+project actually wanted from either framework are a combined ~120 lines, and
+neither framework's version would have run without either a broken import or
+a bundled OpenAI SDK this project has no other use for. Verified working, not
+just implemented: fed a genuine answer, it scored 100; fed a deliberately
+fabricated one (a wrong percentage, an invented region restriction), it
+scored 0 and named the exact false claims.
 
 ### What this harness does
 
@@ -736,10 +831,18 @@ Measure the stages separately, because they fail independently.
   call (the scarce, quota-limited resource). On this corpus both currently
   read **1.000** — every doc-grounded question's correct document lands at
   rank 1, not merely somewhere in the top 6.
+- **context precision** — `len(citations) / len(hits)` per question, averaged.
+  Free to compute: both numbers already exist from the steps above, no extra
+  API call.
 - **answer accuracy** — checked by requiring specific literal strings (`1971`,
   `Levi-Montalcini`, `8.8`) rather than fuzzy similarity. Exact-match checks on
   numbers and names are unglamorous, and they catch what embedding-similarity
   scoring hides.
+- **faithfulness**, opt-in via `--faithfulness` — one Gemini judge call per
+  answered question, scoring whether every cited claim actually follows from
+  the block it cites. Opt-in because it doubles the generation cost of a run;
+  cached like every other answer, so re-adding it later never re-judges what
+  is already scored.
 - **refusal rate on unanswerable questions**, split into two kinds:
   - _out-of-domain_ ("capital of Mongolia") — should be stopped by the gate.
   - _adjacent-absent_ ("in what year was Theodor Schwann born?") — the topic
@@ -752,6 +855,15 @@ Measure the stages separately, because they fail independently.
 Also tracked: **false refusals**. Grounding strictness always trades against
 helpfulness — a system that refuses everything scores perfectly on leakage. You
 must watch both numbers, or you will tune yourself into uselessness.
+
+**Measured**, with `--faithfulness`: context precision **19.0%**, faithfulness
+**100.0/100**. Read those together, not separately — 19% precision means most
+of the top-6 was not cited, which sounds bad in isolation, but faithfulness
+100 confirms the chunks that *were* cited were used honestly. Low precision on
+its own is not a defect: `TOP_K=6` is deliberately generous so the generator
+has room to find the one relevant chunk among plausible neighbours (§6), and
+this pair of numbers is what tells you whether that headroom is being spent
+well or is actually hiding a problem.
 
 ### An eval set is coupled to its corpus
 

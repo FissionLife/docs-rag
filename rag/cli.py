@@ -319,15 +319,69 @@ def dev() -> None:
 def evaluate() -> None:
     """Score the pipeline against eval/questions.json.
 
-        uv run eval            reuse cached answers where possible
-        uv run eval --fresh    re-ask everything
+        uv run eval                  reuse cached answers where possible
+        uv run eval --fresh          re-ask everything
+        uv run eval --faithfulness   also judge whether citations are honest
 
-    Reports retrieval recall, answer accuracy and refusal rate. The shipped
-    question set describes a specific corpus -- write your own to match your
-    documents, or the numbers mean nothing.
+    Reports retrieval recall, MRR, nDCG, context precision, answer accuracy
+    and refusal rate always; --faithfulness adds one extra judge call per
+    answered question (cached, like everything else) to score whether each
+    citation actually supports the claim it is attached to -- citation
+    verification alone only checks the citation points at a real block. The
+    shipped question set describes a specific corpus -- write your own to
+    match your documents, or the numbers mean nothing.
     """
     from .evaluate import main as run
     run()
+
+
+def compare_store() -> None:
+    """Compare the native store against a real vector database (Chroma).
+
+        uv run compare-store "your question"
+
+    Not part of the pipeline -- this is the demonstration this project's own
+    design decision invites: `rag/store.py` argues that exact search beats an
+    approximate index at this corpus's size, and this command makes that
+    checkable rather than merely asserted. It loads the SAME vectors into an
+    actual Chroma collection (no re-embedding) and shows both stores' answers
+    to the same query side by side, with latency.
+
+    Needs the optional `chroma` extra: `uv sync --extra chroma`. The default
+    install and every other command never touch it.
+    """
+    from .chroma_store import ChromaNotInstalled, compare
+    q = " ".join(_args('usage: uv run compare-store "your question"'))
+    try:
+        r = compare(q)
+    except ChromaNotInstalled as e:
+        raise SystemExit(str(e))
+
+    print(f"\n{r['n_vectors']} vectors, compared identically in both stores\n")
+    print(f"NATIVE (SQLite + NumPy, exact cosine)   {r['native_ms']:.2f} ms")
+    for h in r["native"]:
+        loc = h["title"] + (f" > {h['section']}" if h["section"] else "")
+        print(f"    {h['score']:.3f}  {loc}")
+
+    print(f"\nCHROMA ({r['dir']}, approximate HNSW)   {r['chroma_ms']:.2f} ms")
+    for h in r["chroma"]:
+        loc = h["title"] + (f" > {h['section']}" if h["section"] else "")
+        print(f"    {h['score']:.3f}  {loc}")
+
+    native_top = {h["title"] for h in r["native"]}
+    chroma_top = {h["title"] for h in r["chroma"]}
+    if native_top == chroma_top:
+        print("\nSame top results from both stores. At this corpus size, "
+              "Chroma's approximate index costs a new dependency and a "
+              "second copy of the data to reach the answer exact search "
+              "already gives for free.")
+    else:
+        only_native = native_top - chroma_top
+        print(f"\nResults differ: {len(only_native)} result(s) only the "
+              f"native store found -- {', '.join(sorted(only_native))}. "
+              "This is what 'approximate' means: HNSW trades a small, "
+              "usually-invisible recall loss for speed at a scale this "
+              "corpus has not reached.")
 
 
 def main() -> None:
@@ -368,7 +422,17 @@ ASK
                                  passage, marked CITED or unused. The fastest
                                  way to see why an answer came out as it did.
   uv run eval                    Score accuracy and grounding against
-                                 eval/questions.json (--fresh to re-ask).
+                                 eval/questions.json (--fresh to re-ask,
+                                 --faithfulness to also judge citations).
+
+DEMO / COMPARISON  (not part of the pipeline)
+  RAG_CHUNK_MODE=hierarchical    Switch to a 2-level chunk hierarchy built
+  (or =flat to switch back)      by rag/hierarchy.py. Each mode has its own
+                                 pre-built index, so switching is instant
+                                 once both exist (build both with `ingest`).
+  uv run compare-store "..."     Same vectors, native store vs. a real
+                                 Chroma collection, side by side. Needs
+                                 `uv sync --extra chroma`.
 
 TYPICAL SESSION
   uv run add https://en.wikipedia.org/wiki/Retrieval-augmented_generation

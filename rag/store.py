@@ -6,15 +6,17 @@ faster and more accurate than any approximate index. numpy does ~1e5 x 1536
 in single-digit milliseconds. Reach for FAISS / pgvector / Qdrant when the
 matrix stops fitting in RAM or you need concurrent writers -- not before.
 
-Each (model, dimension) pair gets its own index directory, so you can build
-several and compare them without rebuilding.
+Each (model, dimension, chunk mode) triple gets its own index directory, so
+you can build several and compare them -- or flip between a flat and a
+hierarchical chunking of the same corpus -- without rebuilding either.
 """
 import json
 import sqlite3
 
 import numpy as np
 
-from .config import EMBED_DIM, EMBED_MODEL, INDEX_DIR
+from .config import CHUNK_MODE, EMBED_DIM, EMBED_MODEL, INDEX_DIR
+from .hierarchy import is_summary
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -30,19 +32,27 @@ CREATE INDEX IF NOT EXISTS chunks_doc ON chunks(doc_id);
 """
 
 
-def index_dir(model: str = EMBED_MODEL, dim: int = EMBED_DIM):
-    return INDEX_DIR / f"{model}-{dim}d"
+def index_dir(model: str = EMBED_MODEL, dim: int = EMBED_DIM,
+             mode: str = CHUNK_MODE):
+    suffix = "" if mode == "flat" else f"-{mode}"
+    return INDEX_DIR / f"{model}-{dim}d{suffix}"
 
 
 class Store:
-    def __init__(self, model: str = EMBED_MODEL, dim: int = EMBED_DIM):
-        self.model, self.dim = model, dim
-        self.dir = index_dir(model, dim)
+    def __init__(self, model: str = EMBED_MODEL, dim: int = EMBED_DIM,
+                mode: str = CHUNK_MODE):
+        self.model, self.dim, self.mode = model, dim, mode
+        self.dir = index_dir(model, dim, mode)
         self.db_path = self.dir / "chunks.db"
         self.vec_path = self.dir / "vectors.npy"
         self.meta_path = self.dir / "meta.json"
-        # Survives re-ingests; see embed.py for why it is content-addressed.
-        self.vector_cache = self.dir / "vector_cache.npz"
+        # Content-addressed on (model, dim, text) -- see embed.py -- so it is
+        # not keyed by chunk mode at all. Deliberately shared across every
+        # mode's directory: the hierarchical index's leaf chunks are the same
+        # text as the flat index's, so building it after `flat` reuses every
+        # leaf embedding already paid for and only spends new calls on the
+        # cluster-summary chunks that are actually new.
+        self.vector_cache = index_dir(model, dim, "flat") / "vector_cache.npz"
 
     # --- write ---------------------------------------------------------
     def write(self, chunks: list[dict], vectors: np.ndarray) -> None:
@@ -68,11 +78,19 @@ class Store:
         con.close()
 
         np.save(self.vec_path, vectors.astype(np.float32))
+        n_summary = sum(1 for c in chunks if is_summary(c["doc_id"]))
         self.meta_path.write_text(json.dumps({
             "embed_model": self.model,
             "dim": self.dim,
+            "mode": self.mode,
             "chunks": len(chunks),
-            "docs": len({c["doc_id"] for c in chunks}),
+            # Real corpus documents only -- cluster-summary chunks are
+            # synthesized, not sourced from a document, so counting their
+            # doc_ids here would make every hierarchical-mode index look
+            # "out of sync" with the corpus (see status() and Rag.__init__).
+            "docs": len({c["doc_id"] for c in chunks
+                        if not is_summary(c["doc_id"])}),
+            "summary_chunks": n_summary,
         }, indent=2), encoding="utf-8")
 
     # --- read ----------------------------------------------------------

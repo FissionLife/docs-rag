@@ -12,6 +12,14 @@ dependencies = [
     "trafilatura>=2.2.0",
 ]
 
+# Not part of the core pipeline -- chroma_store.py is a side-by-side
+# comparison for `uv run compare-store`, showing what an actual vector
+# database does with the same data the SQLite+NumPy store already handles
+# correctly and faster at this size. `uv sync --extra chroma` opts in;
+# the default install (and every other command) never touches it.
+[project.optional-dependencies]
+chroma = ["chromadb>=1.5.0"]
+
 # These become `uv run <name>`. uv has no npm-style script table; console
 # entry points are the idiomatic equivalent, and uv installs the project
 # automatically before running one.
@@ -30,6 +38,7 @@ inspect = "rag.cli:inspect"
 dev = "rag.cli:dev"
 ask = "rag.cli:ask"
 eval = "rag.cli:evaluate"
+compare-store = "rag.cli:compare_store"
 
 [build-system]
 requires = ["hatchling"]

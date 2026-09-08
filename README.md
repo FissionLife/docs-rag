@@ -13,7 +13,8 @@ Learning the concepts: **[docs/RAG_GUIDE.md](docs/RAG_GUIDE.md)** — 13 section
 from chunking to evaluation, including a case study of building this corpus.
 
 Five dependencies. No LangChain, no vector database, no framework. Managed with
-[uv](https://docs.astral.sh/uv/).
+[uv](https://docs.astral.sh/uv/). One optional sixth (`chromadb`) exists
+purely for `compare-store` (see below) — the core pipeline never imports it.
 
 ## Setup
 
@@ -76,12 +77,36 @@ of what makes a chunk retrievable.
 | `uv run dev` | Interactive loop. Start here. |
 | `uv run ask "..."` | A single answer with citations |
 | `... --chunks` | On either: also print every retrieved passage, marked **CITED** or **unused** |
-| `uv run eval` | Score accuracy and grounding (`--fresh` to re-ask) |
+| `uv run eval` | Score accuracy and grounding (`--fresh` to re-ask, `--faithfulness` for one extra check per answer) |
 
 `inspect` and `--chunks` are the debugging pair: they separate *"the passage was
 never retrieved"* from *"the model had it and answered badly"*. The **unused**
 passages are the informative half. In `dev`, `\chunks` toggles printing
 mid-session and `\last` reprints the previous answer's passages.
+
+## Demo / comparison modes
+
+Not part of the pipeline anyone needs — for showing how the pieces work.
+
+| Command | Does |
+|---|---|
+| `RAG_CHUNK_MODE=hierarchical uv run ingest` | Build a second, 2-level hierarchical index (clusters of leaf chunks + a summary chunk per cluster) alongside the default flat one |
+| `RAG_CHUNK_MODE=hierarchical uv run dev` | Switch to it — **instant**, no re-ingest, since each mode has its own pre-built index directory |
+| `uv run compare-store "..."` | Same vectors, native store vs. a real Chroma collection, side by side, with latency (`uv sync --extra chroma` first) |
+
+**Hierarchical mode**, asking *"what database options does AWS offer"*: a
+cluster summary covering five related database services was retrieved and
+cited alongside three leaf chunks, and the answer named two services (Aurora,
+RDS for Db2) that never made the flat top-6 on their own. Building it after
+the flat index is nearly free — the embedding cache is shared across modes,
+so only the newly-synthesized cluster summaries (28 on this corpus) cost new
+calls; the 559 leaves are reused. Detail in
+[the guide, §8.7](docs/RAG_GUIDE.md#87-hierarchical--raptor).
+
+**`compare-store`**, measured on this corpus (559 vectors): identical top-6
+results from both stores, **0.5 ms** native vs **~3.2 ms** Chroma — the exact
+claim `store.py`'s docstring makes about exact search beating an approximate
+index at this size, made checkable rather than asserted.
 
 ## The AWS corpus
 
@@ -154,11 +179,13 @@ QUERYING   overview.py ─▶ embed.py ─▶ retrieve.py ─▶ generate.py
 | `rag/store.py` | Persistent store: SQLite metadata + numpy matrix |
 | `rag/retrieve.py` | Hybrid dense/BM25 retrieval, RRF fusion, MMR diversity |
 | `rag/overview.py` | Query routing; corpus-level context from metadata + leads |
-| `rag/generate.py` | Grounded answering and citation verification |
+| `rag/hierarchy.py` | Opt-in 2-level chunk hierarchy (RAPTOR-lite) — demo only |
+| `rag/generate.py` | Grounded answering, citation verification, faithfulness judging |
 | `rag/pipeline.py` | `ingest()` and `Rag.ask()` — the system in ~100 lines |
 | `rag/backoff.py` | Retry on transient errors; proactive quota rate limiting |
 | `rag/cli.py` | The `uv run` entry points |
-| `rag/evaluate.py` | Retrieval recall, answer accuracy, refusal rate |
+| `rag/evaluate.py` | Recall, MRR/nDCG, context precision, accuracy, refusal, faithfulness |
+| `rag/chroma_store.py` | Native store vs. Chroma comparison — demo only |
 | `tools/aws_build.py` | Build the AWS corpus from the whitepaper |
 
 ## Measured results
@@ -171,12 +198,20 @@ QUERYING   overview.py ─▶ embed.py ─▶ retrieve.py ─▶ generate.py
 | Retrieval recall@6 | **22/22 (100%)** |
 | MRR | **1.000** (correct doc always ranked #1, not just top-6) |
 | nDCG@6 | **1.000** (binary relevance) |
+| Context precision | **19.0%** (share of the top-6 actually cited — read with faithfulness, not alone) |
 | Answer accuracy (exact facts present) | **22/22 (100%)** |
+| Faithfulness (`--faithfulness`) | **100.0/100**, 22 answers judged |
 | Refusal on unanswerable | **9/9 (100%)** |
 | — out-of-domain | 4/4, stopped by the relevance gate |
 | — adjacent-absent | 5/5, stopped by the prompt + citation check |
 | False refusals | **0** |
-| Elapsed | 257s |
+| Elapsed | 257s (125s with `--faithfulness`, generation answers reused from cache) |
+
+Faithfulness is verified working, not just wired up: fed a genuine answer it
+scored 100; fed a deliberately fabricated one — a wrong discount percentage,
+an invented region restriction — it scored **0** and named the exact false
+claims. See [the guide, §9](docs/RAG_GUIDE.md#9-evaluation) for why RAGAS and
+DeepEval were tried and not adopted for this.
 
 `gemini-3.7-flash` reached 18/18 on the same set before hitting its daily quota,
 so this is not a Flash-Lite-specific result.

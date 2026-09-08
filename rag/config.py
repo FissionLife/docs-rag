@@ -43,6 +43,20 @@ CHUNK_CHARS = 1400        # target chunk size in characters (~350 tokens)
 CHUNK_OVERLAP = 200       # sliding overlap so facts aren't cut in half
 MIN_CHUNK_CHARS = 120     # drop fragments smaller than this
 
+# "flat" (default): the chunks in chunk.py, nothing more.
+# "hierarchical": flat chunks (the leaves) PLUS one synthesized summary chunk
+# per cluster of related leaves (see hierarchy.py) -- a small RAPTOR-style
+# tree, two levels deep. Each mode gets its own index directory (see
+# store.index_dir), so switching between them is instant once both have been
+# built: change this and reload, no re-ingest. Build both with
+# `RAG_CHUNK_MODE=hierarchical uv run ingest` in addition to the default.
+CHUNK_MODE = os.getenv("RAG_CHUNK_MODE", "flat")
+
+# Aim for clusters of about this many leaf chunks when building the
+# hierarchical index. Smaller -> more, narrower clusters; larger -> fewer,
+# broader ones. Tune per corpus size, not per query.
+CLUSTER_TARGET_SIZE = 20
+
 # --- Embedding requests -----------------------------------------------------
 EMBED_BATCH = 32          # texts per API call
 EMBED_MAX_RETRIES = 6

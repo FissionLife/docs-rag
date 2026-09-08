@@ -1,7 +1,8 @@
 """Evaluation harness.
 
-Four things are measured, because a RAG system can fail at each
-independently:
+Six things can be measured, because a RAG system can fail at each
+independently. The first five run every time; faithfulness is opt-in because
+it costs one extra generation call per question.
 
   retrieval recall  -- did the right document reach the context at all?
                        If this fails, nothing downstream can save the answer.
@@ -11,9 +12,26 @@ independently:
                        Computed with binary relevance (one correct document
                        per question) -- graded nDCG needs graded relevance
                        judgments this eval set does not carry.
+  context precision -- of the chunks retrieved, what fraction did the
+                       generator actually cite? Low precision means the top-k
+                       is full of plausible-looking noise around the one
+                       chunk that mattered. Free to compute: citations and
+                       hit counts are already produced by the steps above.
   answer accuracy   -- given good context, did the generator state the facts?
                        Checked by requiring specific strings (numbers, names)
                        rather than by fuzzy similarity, which hides errors.
+  faithfulness      -- (opt-in, --faithfulness) does every cited claim
+                       actually follow from the block it cites? Citation
+                       verification (generate.py) checks a citation points at
+                       a real block; it does not check the block supports the
+                       claim. This is that check -- one Gemini judge call per
+                       answer, using the client already in this project. Built
+                       instead of adopting the `ragas` package: verified by
+                       installing it that ragas 0.4.3 fails to import out of
+                       the box (an internal import of a langchain_community
+                       class that no longer exists there), and even fixed
+                       pulls 100+ packages of LangChain+OpenAI for a metric
+                       this is one function.
   grounding         -- did it refuse when the corpus has no answer?
                        Split into out-of-domain (easy, the gate should catch
                        it) and adjacent-absent (hard: the topic is in the
@@ -36,6 +54,7 @@ import time
 
 from .backoff import DailyQuotaExceeded
 from .config import EMBED_DIM, EMBED_MODEL, GEN_MODEL, ROOT, TOP_K
+from .generate import judge_faithfulness
 from .pipeline import Rag
 
 QUESTIONS = ROOT / "eval" / "questions.json"
@@ -82,6 +101,27 @@ def _ask(rag: Rag, q: str, cache: dict) -> dict:
     return slim
 
 
+def _faithfulness_key(q: str, answer_text: str) -> str:
+    """Keyed on the answer text too, so a changed answer re-judges rather
+    than silently keeping a verdict for a claim that no longer exists."""
+    sig = f"faith|{q}|{answer_text}|{GEN_MODEL}"
+    return hashlib.sha1(sig.encode("utf-8")).hexdigest()[:16]
+
+
+def _judge(rag: Rag, item: dict, r: dict, hits: list[dict],
+          cache: dict) -> dict | None:
+    """Faithfulness score for one answer, cached. None if not judgeable."""
+    if r["refused"] or not r["citations"]:
+        return None      # nothing was claimed against the context to judge
+    k = _faithfulness_key(item["q"], r["answer"])
+    if k in cache:
+        return cache[k]
+    verdict = judge_faithfulness(item["q"], r["answer"], hits)
+    cache[k] = verdict
+    CACHE.write_text(json.dumps(cache, indent=1), encoding="utf-8")
+    return verdict
+
+
 def _doc_rank(hits: list[dict], want: str | None) -> int | None:
     """1-indexed rank of `want`'s first appearance in retrieval order.
 
@@ -104,11 +144,14 @@ def _doc_rank(hits: list[dict], want: str | None) -> int | None:
 
 def main() -> None:
     fresh = "--fresh" in sys.argv
+    want_faithfulness = "--faithfulness" in sys.argv
     spec = json.loads(QUESTIONS.read_text(encoding="utf-8"))
     cache = _load_cache(fresh)
     rag = Rag()
     if cache:
         print(f"(reusing {len(cache)} cached answers; --fresh to ignore)")
+    if want_faithfulness:
+        print("(--faithfulness: one extra judge call per answered question)")
     print(f"index: {rag.n} chunks | embed {EMBED_MODEL}@{EMBED_DIM}d | "
           f"gen {GEN_MODEL} | top_k {TOP_K}\n")
 
@@ -118,6 +161,9 @@ def main() -> None:
     fact_misses = []
     reciprocal_ranks = []
     ndcg_scores = []
+    precisions = []
+    faithfulness_scores = []
+    unfaithful = []
 
     print("=" * 78)
     print("ANSWERABLE")
@@ -135,13 +181,20 @@ def main() -> None:
         # from a fresh retrieval call (embedding only, cheap) rather than the
         # cached generation answer, which only ever stored an unordered set.
         want = item["doc"]
-        hits = rag.retriever.search(item["q"]) if want is not None else []
+        # For a corpus-level question (doc=None) the real context was the
+        # overview manifest, not a similarity search -- use that here too,
+        # so faithfulness judging (if requested) sees what was actually shown
+        # to the generator rather than an empty, misleadingly-failing context.
+        hits = rag.retriever.search(item["q"]) if want is not None \
+            else rag.overview()
         rank = _doc_rank(hits, want)
         hit = want is None or rank is not None
         recall += hit
         if want is not None:
             reciprocal_ranks.append(1.0 / rank if rank else 0.0)
             ndcg_scores.append(1.0 / math.log2(rank + 1) if rank else 0.0)
+            if hits:
+                precisions.append(len(r["citations"]) / len(hits))
 
         missing = [p for p in item["must"]
                    if not re.search(p, r["answer"], re.I)]
@@ -152,10 +205,26 @@ def main() -> None:
         elif missing:
             fact_misses.append((item["q"], missing))
 
+        verdict = None
+        if want_faithfulness:
+            try:
+                verdict = _judge(rag, item, r, hits, cache)
+            except DailyQuotaExceeded as e:
+                print(f"\n{e}")
+                print("\nPartial results are cached; rerun to continue.")
+                raise SystemExit(1)
+            if verdict and verdict["score"] is not None:
+                faithfulness_scores.append(verdict["score"])
+                if verdict["score"] < 80:
+                    unfaithful.append((item["q"], verdict))
+
         mark = "PASS" if ok else "FAIL"
         rank_str = f" rank={rank}" if want is not None else ""
+        faith_str = (f" faith={verdict['score']}"
+                    if verdict and verdict["score"] is not None else "")
         print(f"\n{i:>2}. [{mark}] retrieval={'hit' if hit else 'MISS'}"
-              f"{rank_str} cos={r['best_cosine']} cites={r['citations']}")
+              f"{rank_str} cos={r['best_cosine']} cites={r['citations']}"
+              f"{faith_str}")
         print(f"    Q: {item['q']}")
         print(f"    A: {r['answer'][:260]}")
         if missing:
@@ -199,7 +268,18 @@ def main() -> None:
               f"(1.0 = correct doc always ranked #1)")
         print(f"  nDCG@{TOP_K}               {ndcg:6.3f}        "
               f"(binary relevance -- rewards rank, not just presence)")
+    if precisions:
+        prec = sum(precisions) / len(precisions)
+        print(f"  context precision    {prec:6.1%}        "
+              f"(share of retrieved chunks actually cited)")
     print(f"  answer accuracy      {correct}/{na}   {correct / na:6.1%}")
+    if want_faithfulness:
+        if faithfulness_scores:
+            avg = sum(faithfulness_scores) / len(faithfulness_scores)
+            print(f"  faithfulness         {avg:6.1f}/100     "
+                  f"({len(faithfulness_scores)} answers judged)")
+        else:
+            print("  faithfulness         n/a (nothing answered to judge)")
     print(f"  refusal rate         {refused}/{nu}   {refused / nu:6.1%}")
     for kind, results in sorted(by_kind.items()):
         print(f"      {kind:<18} {sum(results)}/{len(results)}")
@@ -218,6 +298,10 @@ def main() -> None:
         print("\n  GROUNDING LEAKS (answered from outside the corpus):")
         for q, a in leaks:
             print(f"    - {q}\n        {a[:160]}")
+    if unfaithful:
+        print("\n  FAITHFULNESS below 80 (citation present, claim doubtful):")
+        for q, v in unfaithful:
+            print(f"    - {q}  [{v['score']}/100]\n        {v['reason']}")
 
     # A question set is written against one specific corpus. Swap the corpus
     # and the questions quietly stop describing it: retrieval recall collapses
