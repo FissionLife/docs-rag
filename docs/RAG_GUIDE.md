@@ -451,6 +451,31 @@ with `λ = 0.7` here — mostly relevance, with a penalty for redundancy. Note i
 score order is restored for presentation; the generator reads top-down, so the
 best evidence should still come first.
 
+### Deduplication: a step MMR doesn't cover
+
+MMR discourages picking two similar chunks into the *same* top-k, but it still
+lets both **compete** for a slot — a near-duplicate can win purely on
+relevance and only get penalized against a genuinely different second choice.
+A true near-duplicate carries no second fact, so the right fix is to remove it
+before ranking even starts, not to out-argue it during selection.
+
+This is not theoretical on the AWS corpus. "Amazon EC2" and "Amazon EC2 Image
+Builder" share a near-identical metadata header at **cosine 0.957** — same
+category, same launch date, same boilerplate summary line — and 42
+cross-document chunk pairs on this corpus exceed 0.95. `_dedup()` in
+`retrieve.py` collapses any pair above `DEDUP_COSINE` (0.95, keeping the
+higher-fused-score one) out of the candidate pool *before* MMR runs:
+
+```python
+pool = _dedup(self.vectors, pool, fused)
+chosen = _mmr(qv, self.vectors, pool, top_k, MMR_LAMBDA)
+```
+
+Worth noting how the threshold was chosen: an initial guess of 0.97 measured
+clean in testing but missed the real EC2 pair sitting at 0.957 — a reminder
+that a dedup threshold needs to be checked against actual near-duplicates in
+your corpus, not picked by intuition and left unverified.
+
 ### What we deliberately left out: reranking
 
 The strongest single upgrade to this pipeline would be a **cross-encoder
@@ -679,8 +704,16 @@ Measure the stages separately, because they fail independently.
 
 - **Recall@k** — is the right document in the top _k_? This is the ceiling on
   everything downstream. Measure it first; if it is low, no prompt will help.
+  Binary and coarse: rank 1 and rank 6 score identically.
 - **MRR** (mean reciprocal rank) — how high did it rank? `1/rank`, averaged.
-- **nDCG@k** — rank quality with graded relevance.
+  Distinguishes "always first" from "usually barely scrapes into the top-k",
+  which recall alone cannot.
+- **nDCG@k** — rank quality, with a logarithmic rank discount. Normally used
+  with *graded* relevance (this chunk is a 3/5 match, that one a 1/5); this
+  harness computes the **binary-relevance case** instead — one correct
+  document per question, present or absent — which needs no extra grading
+  effort beyond what recall already has and still rewards rank over mere
+  presence. It is not a lesser nDCG, just the same formula with `rel ∈ {0,1}`.
 - **Context precision** — what fraction of retrieved chunks were actually used?
   Low precision wastes tokens and distracts the generator.
 
@@ -693,9 +726,16 @@ Measure the stages separately, because they fail independently.
 
 ### What this harness does
 
-`rag/evaluate.py` reports three numbers over 26 questions:
+`rag/evaluate.py` reports over 31 questions:
 
 - **retrieval recall@6** — did the expected document reach the context?
+- **MRR / nDCG@6** — *where* in the top-6 it landed, not just whether it did.
+  Computed from a live `retriever.search()` call rather than the cached
+  generation answer, because rank needs the ordered hit list and re-running
+  retrieval only costs an embedding call (plentiful) rather than a generation
+  call (the scarce, quota-limited resource). On this corpus both currently
+  read **1.000** — every doc-grounded question's correct document lands at
+  rank 1, not merely somewhere in the top 6.
 - **answer accuracy** — checked by requiring specific literal strings (`1971`,
   `Levi-Montalcini`, `8.8`) rather than fuzzy similarity. Exact-match checks on
   numbers and names are unglamorous, and they catch what embedding-similarity

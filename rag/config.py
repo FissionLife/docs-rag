@@ -63,6 +63,16 @@ TOP_K = 6                 # chunks actually shown to the generator
 RRF_K = 60                # reciprocal-rank-fusion smoothing constant
 MMR_LAMBDA = 0.7          # 1.0 = pure relevance, 0.0 = pure diversity
 
+# Above this cosine, two candidate chunks are the same information twice, not
+# two chunks that happen to agree. Distinct from MIN_COSINE (query relevance)
+# and from MMR_LAMBDA (which discourages redundancy but still lets both
+# compete for a slot) -- this removes one of the pair before ranking even
+# starts. Measured on the AWS corpus: 42 cross-document chunk pairs exceed
+# 0.95, e.g. "Amazon EC2" and "Amazon EC2 Image Builder" share a near-
+# identical metadata header at 0.957 -- which is why the threshold sits at
+# 0.95 and not higher: 0.97 measured clean but missed the real case.
+DEDUP_COSINE = 0.95
+
 # Below this fused-cosine score we assume the corpus has nothing relevant
 # and refuse *before* spending a generation call.
 MIN_COSINE = 0.55

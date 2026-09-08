@@ -20,7 +20,8 @@ from collections import Counter
 
 import numpy as np
 
-from .config import CANDIDATES, MIN_COSINE, MMR_LAMBDA, RRF_K, TOP_K
+from .config import (CANDIDATES, DEDUP_COSINE, MIN_COSINE, MMR_LAMBDA,
+                     RRF_K, TOP_K)
 from .embed import embed_query
 
 _TOKEN = re.compile(r"[a-z0-9]+")
@@ -72,6 +73,28 @@ class BM25:
         return out
 
 
+def _dedup(vectors: np.ndarray, pool: list[int],
+          fused: dict[int, float], threshold: float = DEDUP_COSINE) -> list[int]:
+    """Collapse near-identical chunks before ranking sees them.
+
+    MMR discourages picking two similar chunks into the *same* top-k, but it
+    still lets both compete for a slot -- a near-duplicate can win purely on
+    relevance and only get diversity-penalized against a genuinely different
+    second choice. A true near-duplicate carries no second fact, so the fix is
+    to remove it before MMR runs, not to out-argue it during selection.
+
+    O(pool^2) cosine comparisons, worst case ~30^2 = 900 dot products -- the
+    pool is already capped at CANDIDATES, so this costs nothing measurable.
+    """
+    ordered = sorted(pool, key=lambda i: -fused[i])
+    kept: list[int] = []
+    for i in ordered:
+        if any(float(vectors[i] @ vectors[j]) >= threshold for j in kept):
+            continue
+        kept.append(i)
+    return kept
+
+
 def _mmr(query_vec: np.ndarray, vectors: np.ndarray,
          candidates: list[int], k: int, lam: float) -> list[int]:
     """Maximal Marginal Relevance: pick relevant items that aren't redundant."""
@@ -114,6 +137,7 @@ class Retriever:
             fused[int(i)] = fused.get(int(i), 0.0) + 1.0 / (RRF_K + rank + 1)
 
         pool = sorted(fused, key=lambda i: -fused[i])[:take]
+        pool = _dedup(self.vectors, pool, fused)
         chosen = _mmr(qv, self.vectors, pool, top_k, MMR_LAMBDA)
         # Present in fused-score order; MMR decided membership, not ordering.
         chosen.sort(key=lambda i: -fused[i])

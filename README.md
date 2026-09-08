@@ -169,6 +169,8 @@ QUERYING   overview.py ─▶ embed.py ─▶ retrieve.py ─▶ generate.py
 | Metric | Result |
 |---|---|
 | Retrieval recall@6 | **22/22 (100%)** |
+| MRR | **1.000** (correct doc always ranked #1, not just top-6) |
+| nDCG@6 | **1.000** (binary relevance) |
 | Answer accuracy (exact facts present) | **22/22 (100%)** |
 | Refusal on unanswerable | **9/9 (100%)** |
 | — out-of-domain | 4/4, stopped by the relevance gate |
@@ -178,6 +180,13 @@ QUERYING   overview.py ─▶ embed.py ─▶ retrieve.py ─▶ generate.py
 
 `gemini-3.7-flash` reached 18/18 on the same set before hitting its daily quota,
 so this is not a Flash-Lite-specific result.
+
+Retrieval also deduplicates near-identical chunks before ranking — measured on
+this corpus, "Amazon EC2" and "Amazon EC2 Image Builder" share a metadata
+header at cosine 0.957, one of 42 cross-document pairs above 0.95. `_dedup()`
+in `retrieve.py` removes the lower-scored half of any such pair from the
+candidate pool before MMR runs, so a near-duplicate never occupies a slot a
+genuinely different chunk could fill.
 
 **The split is the interesting part.** *Out-of-domain* questions ("capital of
 Peru") never reach the model — the relevance gate stops them. *Adjacent-absent*

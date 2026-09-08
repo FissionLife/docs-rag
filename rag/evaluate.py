@@ -1,10 +1,16 @@
 """Evaluation harness.
 
-Three things are measured, because a RAG system can fail at each
+Four things are measured, because a RAG system can fail at each
 independently:
 
   retrieval recall  -- did the right document reach the context at all?
                        If this fails, nothing downstream can save the answer.
+  retrieval rank     -- MRR and nDCG@k: recall is binary (in the top-k or
+                       not); these two reward the right document landing
+                       *near the top* over merely scraping into slot 6.
+                       Computed with binary relevance (one correct document
+                       per question) -- graded nDCG needs graded relevance
+                       judgments this eval set does not carry.
   answer accuracy   -- given good context, did the generator state the facts?
                        Checked by requiring specific strings (numbers, names)
                        rather than by fuzzy similarity, which hides errors.
@@ -13,9 +19,17 @@ independently:
                        it) and adjacent-absent (hard: the topic is in the
                        corpus but the specific fact is not, so the gate passes
                        and only the prompt and citation check stand in the way).
+
+Retrieval-rank metrics are computed from a *live* retriever.search() call, not
+from the cached generation answer -- they need the rank-ordered document list,
+and re-running retrieval costs one embedding call (plentiful: 1000/day) rather
+than one generation call (scarce: ~20/day on some models). Cached answers are
+still used for accuracy and refusal, so re-adding these metrics never spends
+a generation call you already paid for.
 """
 import hashlib
 import json
+import math
 import re
 import sys
 import time
@@ -61,12 +75,31 @@ def _ask(rag: Rag, q: str, cache: dict) -> dict:
         "citations": r["citations"],
         "gated": r.get("gated", False),
         "best_cosine": r.get("best_cosine"),
-        "docs": sorted({h["doc_id"] for h in r["hits"]}),
         "note": r.get("note"),
     }
     cache[k] = slim
     CACHE.write_text(json.dumps(cache, indent=1), encoding="utf-8")
     return slim
+
+
+def _doc_rank(hits: list[dict], want: str | None) -> int | None:
+    """1-indexed rank of `want`'s first appearance in retrieval order.
+
+    Ranks *documents*, not chunks: several chunks of the top-k can belong to
+    one document, so hits are collapsed to their first-seen doc_id before
+    searching. Returns None if `want` never appears, or if there is no ground
+    truth to rank against (`want is None`, a corpus-level question).
+    """
+    if want is None:
+        return None
+    seen: list[str] = []
+    for h in hits:
+        if h["doc_id"] not in seen:
+            seen.append(h["doc_id"])
+    for rank, d in enumerate(seen, 1):
+        if d == want or d.startswith(want + "-"):
+            return rank
+    return None
 
 
 def main() -> None:
@@ -83,6 +116,8 @@ def main() -> None:
     recall = correct = 0
     false_refusals = []
     fact_misses = []
+    reciprocal_ranks = []
+    ndcg_scores = []
 
     print("=" * 78)
     print("ANSWERABLE")
@@ -94,12 +129,19 @@ def main() -> None:
             print(f"\n{e}")
             print("\nPartial results are cached; rerun to continue.")
             raise SystemExit(1)
+
         # Document ids carry a short hash of their source, so the question
-        # file names the readable prefix and we match on that.
+        # file names the readable prefix and we match on that. Rank comes
+        # from a fresh retrieval call (embedding only, cheap) rather than the
+        # cached generation answer, which only ever stored an unordered set.
         want = item["doc"]
-        hit = want is None or any(
-            d == want or d.startswith(want + "-") for d in r["docs"])
+        hits = rag.retriever.search(item["q"]) if want is not None else []
+        rank = _doc_rank(hits, want)
+        hit = want is None or rank is not None
         recall += hit
+        if want is not None:
+            reciprocal_ranks.append(1.0 / rank if rank else 0.0)
+            ndcg_scores.append(1.0 / math.log2(rank + 1) if rank else 0.0)
 
         missing = [p for p in item["must"]
                    if not re.search(p, r["answer"], re.I)]
@@ -111,8 +153,9 @@ def main() -> None:
             fact_misses.append((item["q"], missing))
 
         mark = "PASS" if ok else "FAIL"
-        print(f"\n{i:>2}. [{mark}] retrieval={'hit' if hit else 'MISS'} "
-              f"cos={r['best_cosine']} cites={r['citations']}")
+        rank_str = f" rank={rank}" if want is not None else ""
+        print(f"\n{i:>2}. [{mark}] retrieval={'hit' if hit else 'MISS'}"
+              f"{rank_str} cos={r['best_cosine']} cites={r['citations']}")
         print(f"    Q: {item['q']}")
         print(f"    A: {r['answer'][:260]}")
         if missing:
@@ -149,6 +192,13 @@ def main() -> None:
     print("=" * 78)
     print(f"  retrieval recall@{TOP_K}   {recall}/{na}   "
           f"{recall / na:6.1%}")
+    if reciprocal_ranks:
+        mrr = sum(reciprocal_ranks) / len(reciprocal_ranks)
+        ndcg = sum(ndcg_scores) / len(ndcg_scores)
+        print(f"  MRR                  {mrr:6.3f}        "
+              f"(1.0 = correct doc always ranked #1)")
+        print(f"  nDCG@{TOP_K}               {ndcg:6.3f}        "
+              f"(binary relevance -- rewards rank, not just presence)")
     print(f"  answer accuracy      {correct}/{na}   {correct / na:6.1%}")
     print(f"  refusal rate         {refused}/{nu}   {refused / nu:6.1%}")
     for kind, results in sorted(by_kind.items()):
