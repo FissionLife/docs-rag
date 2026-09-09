@@ -22,8 +22,9 @@ from google import genai
 from google.genai import types
 
 from .backoff import RateLimiter, with_retry
-from .config import (API_KEY, EMBED_BATCH, EMBED_DIM, EMBED_ITEMS_PER_MIN,
+from .config import (EMBED_BATCH, EMBED_DIM, EMBED_ITEMS_PER_MIN,
                      EMBED_MAX_RETRIES, EMBED_MODEL)
+from .keys import call_with_rotation, rotator
 
 _TASKLESS = {"gemini-embedding-2"}  # models without a task_type parameter
 
@@ -33,20 +34,17 @@ _PREFIX = {
     "RETRIEVAL_QUERY": "Search query: ",
 }
 
-_client = None
+# Shared across every configured key, not per-key. This stays conservative
+# (bounded by one key's own 95/min allowance) even with several keys active,
+# rather than multiplying the request rate by the key count -- correctness
+# over squeezing out extra throughput.
 _limiter = RateLimiter(EMBED_ITEMS_PER_MIN)
 
 
-def client() -> genai.Client:
-    global _client
-    if _client is None:
-        if not API_KEY:
-            raise SystemExit(
-                "GEMINI_API_KEY is not set. Copy .env.example to .env and "
-                "put your key in it (https://aistudio.google.com/apikey)."
-            )
-        _client = genai.Client(api_key=API_KEY)
-    return _client
+def client(model: str) -> genai.Client:
+    """The client for `model` right now -- may be a different key than the
+    last call, if that key hit its daily quota and rotation moved on."""
+    return rotator().current(model)
 
 
 def normalize(m: np.ndarray) -> np.ndarray:
@@ -70,7 +68,7 @@ def _call(texts: list[str], task: str) -> list[list[float]]:
 
     def once():
         _limiter.reserve(len(texts))
-        r = client().models.embed_content(
+        r = client(EMBED_MODEL).models.embed_content(
             model=EMBED_MODEL, contents=payload, config=cfg)
         got = [e.values for e in r.embeddings]
         # gemini-embedding-2 silently aggregates a list of plain strings into
@@ -80,7 +78,12 @@ def _call(texts: list[str], task: str) -> list[list[float]]:
                 f"expected {len(texts)} embeddings, got {len(got)}")
         return got
 
-    return with_retry(once, max_attempts=EMBED_MAX_RETRIES)
+    # call_with_rotation retries the WHOLE with_retry cycle on a fresh key if
+    # the current one's daily quota is exhausted; with_retry itself is
+    # unchanged -- still the one handling per-minute rate limits and
+    # transient 5xx errors, on whichever key is current at the time.
+    return call_with_rotation(
+        lambda: with_retry(once, max_attempts=EMBED_MAX_RETRIES), EMBED_MODEL)
 
 
 def _key(text: str) -> str:

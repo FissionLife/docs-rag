@@ -23,6 +23,7 @@ from google.genai import types
 from .backoff import RateLimiter, with_retry
 from .config import GEN_MODEL, GEN_PER_MIN
 from .embed import client
+from .keys import call_with_rotation
 
 REFUSAL_TOKEN = "INSUFFICIENT_CONTEXT"
 
@@ -114,20 +115,28 @@ def _generate(prompt: str, system: str = SYSTEM) -> str:
         if thinking is not None:
             cfg["thinking_config"] = thinking
         _limiter.reserve(1)
-        r = client().models.generate_content(
+        r = client(GEN_MODEL).models.generate_content(
             model=GEN_MODEL, contents=prompt,
             config=types.GenerateContentConfig(**cfg))
         return (r.text or "").strip()
 
-    try:
-        return with_retry(lambda: once(_THINKING))
-    except Exception as e:
-        if _THINKING is None or "INVALID_ARGUMENT" not in str(e):
-            raise
-        print(f"    note: {GEN_MODEL} rejected the thinking config; "
-              f"using its default for the rest of this run")
-        _THINKING = None
-        return with_retry(lambda: once(None))
+    def attempt():
+        global _THINKING
+        try:
+            return with_retry(lambda: once(_THINKING))
+        except Exception as e:
+            if _THINKING is None or "INVALID_ARGUMENT" not in str(e):
+                raise
+            print(f"    note: {GEN_MODEL} rejected the thinking config; "
+                  f"using its default for the rest of this run")
+            _THINKING = None
+            return with_retry(lambda: once(None))
+
+    # call_with_rotation retries the whole attempt() -- including the
+    # thinking-config fallback above -- on a fresh key if the current one's
+    # daily quota is exhausted. attempt() looks up its client fresh inside
+    # once(), so it picks up the rotated key automatically on retry.
+    return call_with_rotation(attempt, GEN_MODEL)
 
 
 # --- faithfulness judging ---------------------------------------------

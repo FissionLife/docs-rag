@@ -188,6 +188,7 @@ QUERYING   overview.py ─▶ embed.py ─▶ retrieve.py ─▶ generate.py
 | `rag/generate.py` | Grounded answering, citation verification, faithfulness judging |
 | `rag/pipeline.py` | `ingest()` and `Rag.ask()` — the system in ~100 lines |
 | `rag/backoff.py` | Retry on transient errors; proactive quota rate limiting |
+| `rag/keys.py` | Round-robin across multiple API keys on daily quota exhaustion |
 | `rag/cli.py` | The `uv run` entry points |
 | `rag/evaluate.py` | Recall, MRR/nDCG, context precision, accuracy, refusal, faithfulness |
 | `rag/chroma_store.py` | Native store vs. Chroma comparison — demo only |
@@ -302,3 +303,13 @@ A per-day cap cannot be waited out, yet the API still replies "please retry in
 rather than sleeping through useless retries. **Each model has its own
 allowance**, so switching `RAG_EMBED_MODEL` or `RAG_GEN_MODEL` is the quickest
 unblock.
+
+**Or configure more than one key.** `GEMINI_API_KEY` (or `GEMINI_API_KEYS`)
+accepts a comma-separated list — `rag/keys.py` rotates to the next key
+automatically the moment the current one hits its daily quota for that
+specific model, and keeps working on the same request rather than failing it.
+Quota is tracked per `(key, model)` independently, so a key exhausted for
+generation may still have embedding quota, and vice versa; nothing is shared
+or pooled across keys beyond that bookkeeping. `uv run status` shows how many
+keys are configured. With exactly one key, behaviour is unchanged — there's
+nothing to rotate to, so the original error still surfaces as before.

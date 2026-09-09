@@ -214,8 +214,14 @@ def status() -> None:
     from .corpus import documents
     from .store import Store
 
+    from .config import API_KEYS
+
     docs = documents()
     st = Store()
+    key_note = (f"{len(API_KEYS)} configured, round-robins on daily exhaustion"
+               if len(API_KEYS) > 1 else "1 configured (add more to "
+               "GEMINI_API_KEY, comma-separated, to round-robin)")
+    print(f"API keys         {key_note}")
     print(f"embedding model  {EMBED_MODEL} @ {EMBED_DIM}d")
     print(f"generation model {GEN_MODEL}")
     print(f"corpus           {len(docs)} document(s), "

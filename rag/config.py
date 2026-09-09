@@ -1,5 +1,6 @@
 """Central configuration. Everything tunable lives here."""
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -36,7 +37,20 @@ EMBED_DIM = int(os.getenv("RAG_EMBED_DIM", "1536"))
 # tighter daily quota on flash actually bites, and expect more refusals.
 GEN_MODEL = os.getenv("RAG_GEN_MODEL", "gemini-3.6-flash")
 
-API_KEY = os.getenv("GEMINI_API_KEY")
+# One key, or several to round-robin across. The daily generation quota is
+# as low as ~20 requests/day *per key, per model* on the free tier -- a
+# single key runs out fast. Both GEMINI_API_KEYS and GEMINI_API_KEY accept
+# a comma- or newline-separated list -- a real key never contains a comma,
+# so splitting on one is unambiguous either way, and it means putting
+# several keys directly into GEMINI_API_KEY (rather than renaming it to
+# GEMINI_API_KEYS) also just works. See rag/keys.py for the rotation itself.
+def _parse_keys() -> list[str]:
+    raw = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY") or ""
+    return [k.strip() for k in re.split(r"[,\n]", raw) if k.strip()]
+
+
+API_KEYS = _parse_keys()
+API_KEY = API_KEYS[0] if API_KEYS else None   # back-compat for direct readers
 
 # --- Chunking ---------------------------------------------------------------
 CHUNK_CHARS = 1400        # target chunk size in characters (~350 tokens)
