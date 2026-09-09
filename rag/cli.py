@@ -214,7 +214,7 @@ def status() -> None:
     from .corpus import documents
     from .store import Store
 
-    from .config import API_KEYS
+    from .config import API_KEYS, GEN_MODELS
 
     docs = documents()
     st = Store()
@@ -223,7 +223,12 @@ def status() -> None:
                "GEMINI_API_KEY, comma-separated, to round-robin)")
     print(f"API keys         {key_note}")
     print(f"embedding model  {EMBED_MODEL} @ {EMBED_DIM}d")
-    print(f"generation model {GEN_MODEL}")
+    if len(GEN_MODELS) > 1:
+        print(f"generation model {GEN_MODELS[0]}  (falls back to: "
+              f"{', '.join(GEN_MODELS[1:])})")
+    else:
+        print(f"generation model {GEN_MODEL}  (no fallback configured -- "
+              f"RAG_GEN_MODEL_FALLBACK)")
     print(f"corpus           {len(docs)} document(s), "
           f"{sum(len(d['text']) for d in docs):,} chars")
     if st.exists():

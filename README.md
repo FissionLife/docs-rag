@@ -313,3 +313,14 @@ generation may still have embedding quota, and vice versa; nothing is shared
 or pooled across keys beyond that bookkeeping. `uv run status` shows how many
 keys are configured. With exactly one key, behaviour is unchanged — there's
 nothing to rotate to, so the original error still surfaces as before.
+
+**And/or a fallback generation model.** `RAG_GEN_MODEL_FALLBACK` (comma-
+separated) is tried, in order, once *every* configured key is exhausted for
+the model before it — or if that model is outright unavailable (a 404, not
+a quota problem; this project hit exactly that mid-session when
+`gemini-2.5-flash` closed to new keys). Off by default: not silently
+defaulted to Flash-Lite, because its over-refusal risk (above) is a real
+quality trade a fallback should never make without you choosing it. Verified
+against the live API, not just simulated: setting the primary to the known-
+404 `gemini-2.5-flash` with `gemini-3.5-flash-lite` as fallback correctly
+detected the 404, switched models, and answered normally.

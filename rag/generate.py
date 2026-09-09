@@ -20,10 +20,18 @@ import re
 # from google import genai
 from google.genai import types
 
-from .backoff import RateLimiter, with_retry
-from .config import GEN_MODEL, GEN_PER_MIN
+from .backoff import DailyQuotaExceeded, RateLimiter, with_retry
+from .config import GEN_MODELS, GEN_PER_MIN
 from .embed import client
 from .keys import call_with_rotation
+
+# A model itself being unavailable -- not a quota problem, the model closed
+# or renamed -- surfaces as 404 NOT_FOUND. This project hit exactly that with
+# gemini-2.5-flash mid-session (closed to new keys, redirected to the 3.x
+# line), which is why this is a named, deliberate fallback trigger and not
+# an oversight: rotating keys can never fix it, only a different model can.
+def _model_unavailable(msg: str) -> bool:
+    return "404" in msg and "NOT_FOUND" in msg
 
 REFUSAL_TOKEN = "INSUFFICIENT_CONTEXT"
 
@@ -95,15 +103,17 @@ def build_context(hits: list[dict]) -> str:
 
 # Models disagree on how thinking is configured: 2.5 takes thinking_budget,
 # 3.x takes thinking_level, and 3.6-flash rejects both. We try the configured
-# form once, and on INVALID_ARGUMENT fall back to the model's own default --
-# remembering the answer so the failure is paid once per process, not per call.
-_THINKING = types.ThinkingConfig(thinking_level="low")
+# form once per model and on INVALID_ARGUMENT fall back to that model's own
+# default -- remembered per model, not globally, because GEN_MODELS can now
+# hold several models in one process and a rejection learned from one tells
+# you nothing about whether another accepts it.
+_THINKING: dict[str, types.ThinkingConfig | None] = {
+    m: types.ThinkingConfig(thinking_level="low") for m in GEN_MODELS
+}
 
 
 def _generate(prompt: str, system: str = SYSTEM) -> str:
-    global _THINKING
-
-    def once(thinking):
+    def once(model, thinking):
         cfg = dict(
             system_instruction=system,
             temperature=0.0,
@@ -115,28 +125,46 @@ def _generate(prompt: str, system: str = SYSTEM) -> str:
         if thinking is not None:
             cfg["thinking_config"] = thinking
         _limiter.reserve(1)
-        r = client(GEN_MODEL).models.generate_content(
-            model=GEN_MODEL, contents=prompt,
+        r = client(model).models.generate_content(
+            model=model, contents=prompt,
             config=types.GenerateContentConfig(**cfg))
         return (r.text or "").strip()
 
-    def attempt():
-        global _THINKING
+    def attempt(model):
         try:
-            return with_retry(lambda: once(_THINKING))
+            return with_retry(lambda: once(model, _THINKING[model]))
         except Exception as e:
-            if _THINKING is None or "INVALID_ARGUMENT" not in str(e):
+            if _THINKING[model] is None or "INVALID_ARGUMENT" not in str(e):
                 raise
-            print(f"    note: {GEN_MODEL} rejected the thinking config; "
+            print(f"    note: {model} rejected the thinking config; "
                   f"using its default for the rest of this run")
-            _THINKING = None
-            return with_retry(lambda: once(None))
+            _THINKING[model] = None
+            return with_retry(lambda: once(model, None))
 
-    # call_with_rotation retries the whole attempt() -- including the
-    # thinking-config fallback above -- on a fresh key if the current one's
-    # daily quota is exhausted. attempt() looks up its client fresh inside
-    # once(), so it picks up the rotated key automatically on retry.
-    return call_with_rotation(attempt, GEN_MODEL)
+    # Try each configured model in order, exhausting every key (rag/keys.py)
+    # for one model before moving to the next. Only two conditions justify
+    # moving on: every key exhausted for this model today, or the model
+    # itself being unavailable -- both are "this model is the problem", not
+    # a bug in the request, so a generic exception is never treated this way
+    # (that would silently retry a real bug across every model in the list).
+    last_err = None
+    for i, model in enumerate(GEN_MODELS):
+        try:
+            result = call_with_rotation(lambda m=model: attempt(m), model)
+            if i > 0:
+                print(f"    note: answered using fallback model {model} "
+                     f"({GEN_MODELS[0]} was unavailable)")
+            return result
+        except DailyQuotaExceeded as e:
+            last_err = e
+        except Exception as e:
+            if not _model_unavailable(str(e)):
+                raise
+            last_err = e
+        if i < len(GEN_MODELS) - 1:
+            print(f"    {model} unavailable; falling back to "
+                 f"{GEN_MODELS[i + 1]}")
+    raise last_err
 
 
 # --- faithfulness judging ---------------------------------------------

@@ -1,4 +1,7 @@
-"""Central configuration. Everything tunable lives here."""
+"""Central configuration. Everything tunable lives here, and everything in
+this file is overridable from .env -- nothing is a hardcoded constant a
+change requires editing code for.
+"""
 import os
 import re
 from pathlib import Path
@@ -37,6 +40,30 @@ EMBED_DIM = int(os.getenv("RAG_EMBED_DIM", "1536"))
 # tighter daily quota on flash actually bites, and expect more refusals.
 GEN_MODEL = os.getenv("RAG_GEN_MODEL", "gemini-3.6-flash")
 
+# Fallback generation models, tried in order, each with every configured key
+# exhausted first (see rag/keys.py) before moving to the next. Off by
+# default -- deliberately not auto-defaulted to flash-lite, because that
+# model's over-refusal problem above is a real quality trade a fallback
+# should never make silently. Opt in explicitly, e.g.:
+#   RAG_GEN_MODEL_FALLBACK=gemini-3.5-flash,gemini-3.5-flash-lite
+# Falls back on two conditions only, deliberately narrow (see generate.py):
+# every key exhausted for this model today, or the model itself being
+# unavailable (a 404, e.g. a model closed to new keys -- this project hit
+# exactly that with gemini-2.5-flash). Never on a generic error, which would
+# just mask a real bug behind N models' worth of retries.
+def _parse_model_list(env_var: str, primary: str) -> list[str]:
+    raw = os.getenv(env_var, "")
+    fallbacks = [m.strip() for m in re.split(r"[,\n]", raw) if m.strip()]
+    seen, ordered = set(), []
+    for m in [primary] + fallbacks:
+        if m not in seen:
+            seen.add(m)
+            ordered.append(m)
+    return ordered
+
+
+GEN_MODELS = _parse_model_list("RAG_GEN_MODEL_FALLBACK", GEN_MODEL)
+
 # One key, or several to round-robin across. The daily generation quota is
 # as low as ~20 requests/day *per key, per model* on the free tier -- a
 # single key runs out fast. Both GEMINI_API_KEYS and GEMINI_API_KEY accept
@@ -53,9 +80,9 @@ API_KEYS = _parse_keys()
 API_KEY = API_KEYS[0] if API_KEYS else None   # back-compat for direct readers
 
 # --- Chunking ---------------------------------------------------------------
-CHUNK_CHARS = 1400        # target chunk size in characters (~350 tokens)
-CHUNK_OVERLAP = 200       # sliding overlap so facts aren't cut in half
-MIN_CHUNK_CHARS = 120     # drop fragments smaller than this
+CHUNK_CHARS = int(os.getenv("RAG_CHUNK_CHARS", "1400"))       # ~350 tokens
+CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "200"))    # so facts aren't cut in half
+MIN_CHUNK_CHARS = int(os.getenv("RAG_MIN_CHUNK_CHARS", "120"))  # drop fragments smaller than this
 
 # "flat" (default): the chunks in chunk.py, nothing more.
 # "hierarchical": flat chunks (the leaves) PLUS one synthesized summary chunk
@@ -69,11 +96,11 @@ CHUNK_MODE = os.getenv("RAG_CHUNK_MODE", "flat")
 # Aim for clusters of about this many leaf chunks when building the
 # hierarchical index. Smaller -> more, narrower clusters; larger -> fewer,
 # broader ones. Tune per corpus size, not per query.
-CLUSTER_TARGET_SIZE = 20
+CLUSTER_TARGET_SIZE = int(os.getenv("RAG_CLUSTER_SIZE", "20"))
 
 # --- Embedding requests -----------------------------------------------------
-EMBED_BATCH = 32          # texts per API call
-EMBED_MAX_RETRIES = 6
+EMBED_BATCH = int(os.getenv("RAG_EMBED_BATCH", "32"))         # texts per API call
+EMBED_MAX_RETRIES = int(os.getenv("RAG_EMBED_MAX_RETRIES", "6"))
 
 # The free tier counts *individual texts*, not HTTP calls: a batch of 32
 # spends 32 units against a 100-per-minute quota. Stay just under it rather
@@ -86,10 +113,10 @@ EMBED_ITEMS_PER_MIN = int(os.getenv("RAG_EMBED_RPM", "95"))
 GEN_PER_MIN = int(os.getenv("RAG_GEN_RPM", "10"))
 
 # --- Retrieval --------------------------------------------------------------
-CANDIDATES = 30           # how many each retriever proposes before fusion
-TOP_K = 6                 # chunks actually shown to the generator
-RRF_K = 60                # reciprocal-rank-fusion smoothing constant
-MMR_LAMBDA = 0.7          # 1.0 = pure relevance, 0.0 = pure diversity
+CANDIDATES = int(os.getenv("RAG_CANDIDATES", "30"))   # each retriever proposes this many before fusion
+TOP_K = int(os.getenv("RAG_TOP_K", "6"))               # chunks actually shown to the generator
+RRF_K = int(os.getenv("RAG_RRF_K", "60"))              # reciprocal-rank-fusion smoothing constant
+MMR_LAMBDA = float(os.getenv("RAG_MMR_LAMBDA", "0.7"))  # 1.0 = pure relevance, 0.0 = pure diversity
 
 # Above this cosine, two candidate chunks are the same information twice, not
 # two chunks that happen to agree. Distinct from MIN_COSINE (query relevance)
@@ -99,8 +126,8 @@ MMR_LAMBDA = 0.7          # 1.0 = pure relevance, 0.0 = pure diversity
 # 0.95, e.g. "Amazon EC2" and "Amazon EC2 Image Builder" share a near-
 # identical metadata header at 0.957 -- which is why the threshold sits at
 # 0.95 and not higher: 0.97 measured clean but missed the real case.
-DEDUP_COSINE = 0.95
+DEDUP_COSINE = float(os.getenv("RAG_DEDUP_COSINE", "0.95"))
 
 # Below this fused-cosine score we assume the corpus has nothing relevant
 # and refuse *before* spending a generation call.
-MIN_COSINE = 0.55
+MIN_COSINE = float(os.getenv("RAG_MIN_COSINE", "0.55"))
