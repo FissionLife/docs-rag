@@ -15,7 +15,10 @@ For diagrams of every stage in plain language, plus a demo command cheat
 sheet, see **[docs/PIPELINE_DIAGRAMS.md](docs/PIPELINE_DIAGRAMS.md)**. For
 *why* each technique was chosen over the real alternatives, with exact
 formulas and step-by-step mechanics for every stage, see
-**[docs/DECISION_PATHWAY.md](docs/DECISION_PATHWAY.md)**.
+**[docs/DECISION_PATHWAY.md](docs/DECISION_PATHWAY.md)**. For what "ground
+truth" actually means and how to author it well — standalone, no context
+from this repo assumed, safe to share — see
+**[docs/GROUND_TRUTH_GUIDE.md](docs/GROUND_TRUTH_GUIDE.md)**.
 
 Five dependencies. No LangChain, no vector database, no framework. Managed with
 [uv](https://docs.astral.sh/uv/). One optional sixth (`chromadb`) exists
